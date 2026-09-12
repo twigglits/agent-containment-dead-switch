@@ -1,0 +1,8 @@
+flowchart LR
+    I["Validated, immutable submission"] --> X["Disposable execution sandbox"]
+    C["Trusted scorer"] -->|"Required test inputs"| X
+    X -->|"Bounded execution observations"| C
+    K["Answer key / reference outputs"] --> C
+    C --> F["Feedback release policy"]
+    F --> R["Trusted results store"]
+    A["Independent lifecycle actuator"] -->|"Terminate + prevent restart"| X

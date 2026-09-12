@@ -1,14 +1,38 @@
 flowchart TB
-    Internet["Internet"] -->|"Before evaluation"| Prep["VM2 package preparation"]
-    Prep --> Snapshot["Approved immutable package snapshot"]
-    Snapshot -->|"Read-only input"| VM["VM1: agent, harness and tools"]
+    Prep["VM2 package prep (pre-eval)"] --> Snap["Approved immutable snapshot"]
 
-    VM -->|"Permitted actions only"| Gate["Policy gateway"]
-    Gate --> Services["Approved services and isolated grader"]
+    subgraph OFFHOST["Off-host controller (separate node)"]
+      Verify["Attestation verifier"]
+      Lease["Dead switch + run leases"]
+      Actuator["Actuator + network enforcement"]
+      Choke["External network chokepoint"]
+    end
 
-    Evidence["Host and gateway evidence"] --> Watch["External watchdog and run leases"]
-    Monitor["Defensive model"] -->|"Request intervention"| Watch
+    subgraph HOST["Evaluation host (untrusted at runtime)"]
+      subgraph VM2["VM2 — supervisory"]
+        subgraph VM1["VM1 — agent under evaluation"]
+          Agent["Model + harness + tools"]
+        end
+        Intercept["Request interception (in-guest)"]
+        Defender["Defensive model (bounded authority)"]
+      end
+      VMI["Scoped VMI (host-side)"]
+    end
 
-    Watch -->|"Revoke access and close sessions"| Gate
-    Watch -->|"Terminate and prevent restart"| Actuator["Independent lifecycle actuator"]
-    Actuator --> VM
+    TPM["Hardware root of trust<br/>(TPM: measured boot + attestation)"]
+
+    Snap -->|"read-only"| VM1
+    Agent -->|"permitted actions only"| Intercept
+    Defender -.->|"observe"| Agent
+    Intercept -->|"egress"| Choke
+    Choke --> Services["Approved services"]
+    Choke -->|"bounded submission ingress"| Grader["Isolated grading (network-isolated)"]
+    Grader -->|"controlled score release"| Results["Trusted results store / operator"]
+
+    TPM -->|"attestation"| Verify
+    VMI -->|"guest-integrity evidence"| Lease
+    Verify -->|"host trusted only if valid"| Lease
+    Defender -->|"request veto/pause/terminate"| Lease
+    Lease -->|"revoke / stop renewal"| Actuator
+    Actuator -->|"cut egress"| Choke
+    Actuator -->|"stop host / VM2 (stops VM1)"| HOST
