@@ -62,9 +62,19 @@ host-side VMI we want**. So the host is trusted for isolation, but the kill is m
 8. **Host-independent, out-of-band kill.** Primary actuator = cloud control-plane `Terminate` (runs
    off-host, e.g. AWS Nitro's separate-NIC design the guest/host can't forge or block) + an external
    network chokepoint; co-resident hypervisor destroy is a redundant secondary.
-9. **Minimized VMM (Firecracker, not full QEMU); do not expose nested-virt to VM1** (the 2026 KVM
-   "Januscape" escape needs nested virt); **default-deny egress; fencing-token/epoch lease** (replay-
-   proof); **hardened non-disableable logging.**
+9. **VMM for VM1 = QEMU/KVM (amended 2026-09-12, was Firecracker); do not expose nested-virt to VM1**
+   (the 2026 KVM "Januscape" escape needs nested virt); **default-deny egress; fencing-token/epoch
+   lease** (replay-proof); **hardened non-disableable logging.**
+   *Amendment rationale (Jean, 2026-09-12):* agent benchmarks routinely give the agent a real
+   browser, which needs a full device model (virtio-gpu, more RAM, USB), a display, and QMP — none of
+   which Firecracker offers. QEMU provides them, at the cost of a **larger VMM attack surface** (the
+   VENOM class of device-model bugs). This is a deliberate capability-for-surface trade, mitigated
+   by: KVM acceleration with a guest CPU model that exposes **no** nested-virt (`-cpu host` minus
+   `vmx`/`svm`), a reduced device set (virtio only; no legacy FDC/IDE/USB unless a benchmark needs
+   it), seccomp (`-sandbox on`) and a non-root `-runas` where possible, and the unchanged containment
+   boundary around VM2. The containment properties (VM2 supervises, gateway-only egress, scoped VMI,
+   dead-switch, package pre-staging) are VMM-agnostic and are unchanged. QMP `pmemsave` makes scoped
+   VMI *simpler* than Firecracker snapshots (exact guest-physical ranges).
 
 ### Foundations settled earlier (context)
 
@@ -83,7 +93,8 @@ host-side VMI we want**. So the host is trusted for isolation, but the kill is m
 - **Isolation is mechanical, not absolute (A1).** Isolation rests on the VM boundary + deny-by-default
   networking, under a *host-trusted-for-isolation* assumption. It is not an unconditional no-escape
   guarantee — hypervisor vulnerabilities exist (cf. "Januscape", which needs nested virt, so **do not
-  expose nested-virt to VM1**).
+  expose nested-virt to VM1**). VM1 runs under QEMU/KVM (browser support); the VMM attack surface is
+  larger than a microVM's, reduced by a virtio-only device set, seccomp, and no guest nested-virt.
 - **Measurement is scoped, not omniscient (A2).** Scoped VMI names its coverage + blind spots;
   comprehensive coverage is roadmap.
 - **Three distinct functions (A3):** **evidence/measurement** (VMI + gateway observations + the

@@ -169,11 +169,19 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind("172.16.0.1:3128").await?;
     let gw2 = gw.clone();
     tokio::spawn(async move { axum::serve(listener, gateway::router(gw2)).await.unwrap() });
-    let rootfs = run_dir.join("rootfs.ext4");
-    std::fs::copy(Path::new(VM1_DIR).join("rootfs.ext4"), &rootfs)?; // disposable per-run copy
-    let kernel = Path::new(VM1_DIR).join("vmlinux");
+    // Disposable per-run disk = a qcow2 overlay on the read-only base image (fast, no full copy).
+    let base_disk = Path::new(VM1_DIR).join("vm1.qcow2");
+    let overlay = run_dir.join("vm1-overlay.qcow2");
+    let _ = std::fs::remove_file(&overlay);
+    let qi = std::process::Command::new("/usr/bin/qemu-img")
+        .args(["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", base_disk.to_str().unwrap(), overlay.to_str().unwrap()])
+        .status()?;
+    anyhow::ensure!(qi.success(), "qemu-img overlay create failed");
+    let firmware = Path::new(VM1_DIR).join("QEMU_EFI.fd");
+    let varstore = run_dir.join("efivars.fd");
+    std::fs::copy(Path::new(VM1_DIR).join("efivars-template.fd"), &varstore)?;
     let mut vm = vm1::Vm1::new(&run_dir.join("vm1"));
-    if let Err(e) = vm.boot(&kernel, &rootfs, &staged.image, 2, 1024) {
+    if let Err(e) = vm.boot(&firmware, &varstore, &overlay, &staged.image, 2, 4096) {
         h.log("vm1_boot_failed", e.to_string(), serde_json::json!({}));
         anyhow::bail!("VM1 boot failed: {e}");
     }
@@ -183,12 +191,13 @@ async fn main() -> anyhow::Result<()> {
     // ---- VMI baseline (pre-adversarial: the harness waits for VMI_BASELINE_OK on its console? no —
     // the harness starts on its own; the baseline is taken as early as the symbols are visible.)
     let mut vmi = None;
+    let vmi_work = run_dir.join("vm1");
     let ks_wait = Instant::now();
-    while vmi.is_none() && ks_wait.elapsed() < Duration::from_secs(20) {
-        if let Some(ks) = vm.ksyms() {
-            let mut m = vmi::Vmi::new(ks.clone(), &kernel);
+    while vmi.is_none() && ks_wait.elapsed() < Duration::from_secs(30) {
+        if let Some(km) = vm.kmem() {
+            let mut m = vmi::Vmi::new(km.clone(), &vmi_work);
             vmi_result = m.measure(&mut vm, || true); set_vmi(vmi_result.clone());
-            h.log("vmi_baseline", "VM1 kernel baseline", serde_json::json!({"ksyms": ks, "baseline": m.baseline, "result": vmi_result}));
+            h.log("vmi_baseline", "VM1 kernel baseline", serde_json::json!({"kmem": km, "baseline": m.baseline, "result": vmi_result}));
             vmi = Some(m);
         } else {
             tokio::time::sleep(Duration::from_millis(250)).await;
