@@ -23,14 +23,14 @@ pub struct Hostd {
     pub http: reqwest::Client,
     log_tx: mpsc::Sender<LogEvent>,
     log_seq: AtomicU64,
-    pub log_dropped: AtomicU64,
+    pub log_dropped: std::sync::Arc<AtomicU64>,
 }
 
 impl Hostd {
     pub fn new(base: String, token: String) -> Arc<Self> {
         let (tx, mut rx) = mpsc::channel::<LogEvent>(1000);
         let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap();
-        let h = Arc::new(Hostd { base, token, http, log_tx: tx, log_seq: AtomicU64::new(0), log_dropped: AtomicU64::new(0) });
+        let h = Arc::new(Hostd { base, token, http, log_tx: tx, log_seq: AtomicU64::new(0), log_dropped: std::sync::Arc::new(AtomicU64::new(0)) });
         let hc = h.clone();
         tokio::spawn(async move {
             while let Some(ev) = rx.recv().await {
@@ -38,6 +38,10 @@ impl Hostd {
             }
         });
         h
+    }
+
+    pub fn log_dropped_handle(&self) -> std::sync::Arc<AtomicU64> {
+        self.log_dropped.clone()
     }
 
     pub fn log(&self, kind: &str, msg: impl Into<String>, data: serde_json::Value) {

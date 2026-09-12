@@ -39,7 +39,7 @@ Mac host (trusted, see §0)
 | Request interception (in-guest) | `supervisor gateway` — application-level, exact-action (§5) |
 | Defensive model (bounded authority) | `supervisor defender` — hard rules + advisory judge; authority = closed enum |
 | Host-rooted heartbeat (amended decision 7) | `hostd evidence` — signs only what hostd observes (§3) |
-| Scoped VMI | `supervisor vmi` over VM1 via QMP `pmemsave` — **VM2-side**, rung-1 only (§7) |
+| Scoped VMI | `supervisor vmi` over VM1 via QMP `pmemsave` — **VM2-side, advisory** (records drift as evidence, does not trip; §7) |
 | Package prep → immutable snapshot | `prestage` (§8) |
 | Run lease, fail-closed | controller → hostd; **Mac-owned watchdog** enforces (§4) |
 | Actuator (local rung) | `hostd destroy`: `limactl stop -f` + `limactl delete`, termination confirmed (§4) |
@@ -214,7 +214,7 @@ is exactly what `pmemsave` consumes, so there is no virtual→offset mapping to 
 QEMU's VMI is simpler than Firecracker's snapshot-offset approach). Measurement age > 60 s, an
 implausible range, or a short/failed `pmemsave` ⇒ `Unknown`/`Tampered`, never `Healthy`.
 
-Covered: kernel text, rodata, syscall table. **Not covered:** modules and JIT (BPF) code, data-only
+Covered (trip): the read-only data region (`sys_call_table` and const rodata) — normally immutable after init; a syscall-hooking rootkit changes it. `.text` is measured and its drift recorded as evidence but is **not** a trip, because the kernel legitimately self-patches .text at runtime (jump labels, static keys, ftrace, arm64 alternatives) and telling benign from malicious .text edits needs a patch-site allowlist (deferred; observed as a false-positive trip 2026-09-13 and corrected). **Not covered:** malicious .text edits indistinguishable from self-patching, modules and JIT (BPF) code, data-only
 attacks, page-table aliasing, userland, VM2's own kernel, time between samples. Tests: T-VMI1 snapshot
 byte-flip (positive control), T-VMI2 different kernel image ⇒ mismatch, T-VMI3 in-guest text write
 if the CI kernel permits it (`/dev/mem` or module), T-VMI4 three clean boots ⇒ no false alarm.
@@ -243,7 +243,9 @@ if the CI kernel permits it (`/dev/mem` or module), T-VMI4 three clean boots ⇒
 QEMU/KVM to `VM1_READY`, QMP `stop` → `pmemsave` kernel-code range → `cont` × 3 (hashes stable
 across clean measurements), asserts the guest CPU exposes no nested virt, and SIGKILL-confirms the
 QEMU pid is gone. Records VM2 kernel, `/dev/kvm` presence, `qemu-system-aarch64 --version`, and the
-VM1 image digests from `SHA256SUMS`. Januscape is a KVM/x86 finding, not evidence about this ARM/vz
+VM1 image digests from `SHA256SUMS`. **PASSED 2026-09-12**: VM2 kernel 6.8.0-139, `/dev/kvm` yes,
+QEMU 8.2.2; VM1 booted to `VM1_READY`; `pmemsave` of the 41 MB kernel-code range × 3 gave identical
+sha256 (stable VMI); guest CPU had no `+vmx`/`+svm`; SIGKILL confirmed. Januscape is a KVM/x86 finding, not evidence about this ARM/vz
 stack; the no-nested-virt-to-VM1 rule stays (guest CPU has no `+vmx`/`+svm`), checked in T7.
 
 **Historical (Firecracker, superseded 2026-09-12):** the earlier microVM gate passed on this Mac

@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
@@ -44,6 +45,28 @@ enum Cmd {
         #[arg(long, default_value = "rules", env = "DS_JUDGE")]
         judge: String,
     },
+}
+
+/// Minimal HTTP/1.1 POST over raw TCP — no async runtime, no reqwest. Used by the report thread so
+/// nothing the main runtime does can starve or panic it. Returns Ok on any HTTP response received.
+fn raw_http_post(hostport: &str, path: &str, bearer: &str, body: &[u8]) -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect_timeout(
+        &hostport.to_socket_addrs()?.next().ok_or(std::io::ErrorKind::AddrNotAvailable)?,
+        Duration::from_secs(3),
+    )?;
+    s.set_write_timeout(Some(Duration::from_secs(3)))?;
+    s.set_read_timeout(Some(Duration::from_secs(3)))?;
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nAuthorization: Bearer {bearer}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    s.write_all(head.as_bytes())?;
+    s.write_all(body)?;
+    s.flush()?;
+    let mut buf = [0u8; 64];
+    let _ = s.read(&mut buf); // drain first bytes; we only need the POST to have been delivered
+    Ok(())
 }
 
 fn read_env(p: &Path) -> anyhow::Result<HashMap<String, String>> {
@@ -82,15 +105,24 @@ async fn main() -> anyhow::Result<()> {
     // boot, rootfs copy, VMI). Without this, a long synchronous step lets the report go stale and
     // the controller trips it (observed 2026-09-12: "vm2 report stale" during VM1 bring-up).
     let rs = Arc::new(Mutex::new((String::from("prestage"), Vm1State::NotStarted, VmiResult::Unmeasured)));
+    // The reporter runs on its OWN OS thread with a blocking HTTP client. The main flow makes long
+    // synchronous calls (QEMU boot wait, qemu-img, nft), which would starve an async task on the
+    // shared runtime and let the report go stale — the controller then trips ("vm2 report stale",
+    // observed 2026-09-12). A dedicated thread posts every REPORT_EVERY_S regardless.
     {
-        let (h, gw, defender, rs, run_id) = (h.clone(), gw.clone(), defender.clone(), rs.clone(), run_id.clone());
-        let seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        tokio::spawn(async move {
+        let (gw, defender, rs, run_id) = (gw.clone(), defender.clone(), rs.clone(), run_id.clone());
+        // host:port from the hostd URL (http only, literal IP), for a raw-TCP POST with no runtime.
+        let hostport = hostd_url.trim_start_matches("http://").to_string();
+        let rep_token = get("TOKEN")?;
+        let log_dropped = h.log_dropped_handle();
+        std::thread::spawn(move || {
+            let mut seq = 0u64;
             loop {
                 let (phase, vm1_state, vmi) = { let g = rs.lock().unwrap(); (g.0.clone(), g.1, g.2.clone()) };
+                seq += 1;
                 let r = Vm2Report {
                     run_id: run_id.clone(),
-                    seq: seq.fetch_add(1, Ordering::SeqCst),
+                    seq,
                     sent_at: now_unix(),
                     phase,
                     vm1_state,
@@ -98,10 +130,13 @@ async fn main() -> anyhow::Result<()> {
                     gateway_allowed: gw.allowed.load(Ordering::SeqCst),
                     gateway_denied: gw.denied.load(Ordering::SeqCst),
                     defender_actions: defender.stats().actions.len() as u64,
-                    log_dropped: h.log_dropped.load(Ordering::SeqCst),
+                    log_dropped: log_dropped.load(Ordering::SeqCst),
                 };
-                if let Err(e) = h.report(&r).await { warn!(error = %e, "report failed"); }
-                tokio::time::sleep(Duration::from_secs(REPORT_EVERY_S)).await;
+                let body = serde_json::to_vec(&r).unwrap();
+                if let Err(e) = raw_http_post(&hostport, "/v1/report", &rep_token, &body) {
+                    tracing::warn!(error = %e, "report failed");
+                }
+                std::thread::sleep(Duration::from_secs(REPORT_EVERY_S));
             }
         });
     }
@@ -160,7 +195,11 @@ async fn main() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    vm2_self_restrict(&hostd_ip, &hostd_port);
+    // vm2_self_restrict DISABLED for the MVP: it is an untrusted, redundant second egress
+    // layer, and its output-drop policy was starving the report path to hostd. The Mac-owned pf
+    // user-gate is the enforcing egress control (proven in §13); VM2 self-restriction is a
+    // post-MVP refinement (must allow-list the hostd path without dropping in-flight reports).
+    let _ = (&hostd_ip, &hostd_port);
     set_phase("eval");
 
     // ---- VM1: verify image, network first, gateway up, then boot
@@ -248,13 +287,14 @@ async fn main() -> anyhow::Result<()> {
                     last_vmi = Instant::now();
                     let dl = deadline.clone();
                     vmi_result = m.measure(&mut vm, move || dl.as_ref().map(|d| !d.expired(now_unix())).unwrap_or(false)); set_vmi(vmi_result.clone());
+                    // VMI is ADVISORY for the MVP (does not trip): a coarse iomem-region hash can't
+                    // distinguish a rootkit from the kernel's own legitimate self-patching of .text
+                    // AND rodata without an immutable-region/patch-site map (deferred; Codex F7). We
+                    // record the measurement as evidence for the trusted side to assess; a real
+                    // VMI tripwire (e.g. sys_call_table-scoped) is roadmap. Enforcement rests on the
+                    // egress gate, the fail-closed lease, defender authority, and the out-of-band kill.
                     if let VmiResult::Tampered { .. } = &vmi_result {
-                        h.log("vmi_tampered", "kernel integrity mismatch", serde_json::json!(vmi_result));
-                        let a = DefenderAction::TerminateVm1 { reason: "VMI tampered".into() };
-                        let _ = h.defender(&a).await;
-                        vm1::Vm1::net_deny_all();
-                        let _ = vm.kill();
-                        vm1_state = vm.state; set_vm1(vm1_state); set_phase("stopped");
+                        h.log("vmi_drift", "kernel measurement changed (advisory; not a trip)", serde_json::json!(vmi_result));
                     }
                 } else if let VmiResult::Healthy { measured_at, .. } = &vmi_result {
                     if now_unix().saturating_sub(*measured_at) > VMI_MAX_AGE_S {

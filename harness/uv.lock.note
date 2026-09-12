@@ -1,0 +1,2 @@
+# uv.lock is generated during base provisioning (uv lock) so the digest matches the running uv.
+# Committed lockfile is regenerated on the pinned uv version; prestage runs `uv sync --frozen --no-build`.

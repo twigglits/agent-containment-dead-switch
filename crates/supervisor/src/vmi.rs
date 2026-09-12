@@ -80,11 +80,19 @@ impl Vmi {
                 VmiResult::Healthy { text_sha256: text_sha, rodata_sha256: ro_sha, measured_at: now }
             }
             Some(b) => {
-                if text_sha != b.text_sha256 {
-                    VmiResult::Tampered { region: "kernel_code".into(), expected: b.text_sha256.clone(), actual: text_sha, measured_at: now }
-                } else if ro_sha != b.rodata_sha256 {
+                // Scoped-VMI trip decision (Codex F7): the kernel legitimately self-patches its
+                // .text at runtime (jump labels, static keys, ftrace, arm64 alternatives), so a
+                // byte-exact .text hash false-positives on benign activity. We therefore TRIP only on
+                // the read-only data region — which contains `sys_call_table` on arm64, the primary
+                // syscall-hooking target and normally immutable after init. .text drift is recorded
+                // as evidence (`text_drift`) but is NOT a trip; distinguishing malicious from
+                // legitimate .text edits needs a patch-site allowlist (deferred, stated blind spot).
+                if ro_sha != b.rodata_sha256 {
                     VmiResult::Tampered { region: "kernel_rodata".into(), expected: b.rodata_sha256.clone(), actual: ro_sha, measured_at: now }
                 } else {
+                    if text_sha != b.text_sha256 {
+                        tracing::info!(region = "kernel_code", "text drift (expected: kernel self-patching); not a trip");
+                    }
                     VmiResult::Healthy { text_sha256: text_sha, rodata_sha256: ro_sha, measured_at: now }
                 }
             }

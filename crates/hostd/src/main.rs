@@ -121,8 +121,12 @@ fn gate_set(state: GateState) -> anyhow::Result<()> {
     let p = Path::new(STATE_DIR).join("pf.anchor");
     std::fs::write(&p, gate_rules(state))?;
     run_ok({ let mut c = Command::new("/sbin/pfctl"); c.args(["-q", "-a", "deadswitch", "-f", p.to_str().unwrap()]); c }, "pfctl load anchor")?;
-    // states from the previous gate must die with it (cut kills established flows)
-    if matches!(state, GateState::Cut | GateState::Sealed) {
+    // On CUT (destroy path) drop all of the service user's states so established egress dies with the
+    // run. NOT on SEAL: a blanket `pfctl -k` there also tears down the VM2->hostd control path
+    // (192.168.5.2:7001) and the reporter never recovers (observed 2026-09-13). Sealing relies on the
+    // block rule for NEW egress; scoped teardown of prestage-era egress flows on seal is a post-MVP
+    // refinement (pf cannot kill states by socket-user, so it needs per-destination kills).
+    if matches!(state, GateState::Cut) {
         let _ = Command::new("/sbin/pfctl").args(["-q", "-k", "0.0.0.0/0"]).output();
     }
     info!(?state, "gate set");
@@ -324,7 +328,10 @@ async fn post_report(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body
         return Err((StatusCode::CONFLICT, "wrong run or non-monotonic seq".into()));
     }
     l.report_seq = rep.seq;
+    let (seq, phase) = (rep.seq, rep.phase.clone());
     l.last_report = Some(UntrustedReport { received_at: now_unix(), digest: sha256_hex(&body), body: rep });
+    drop(l);
+    app.evidence_append("vm2_report_ok", serde_json::json!({"seq": seq, "phase": phase}));
     Ok(Json(serde_json::json!({"ok": true})))
 }
 

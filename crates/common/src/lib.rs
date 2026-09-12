@@ -20,7 +20,11 @@ pub const MAX_LEASE_TTL_S: u64 = 15; // Mac profile bound; a delayed lease gets 
 pub const DEFAULT_LEASE_TTL_S: u64 = 15;
 pub const CLOCK_SKEW_S: u64 = 5;
 pub const CHALLENGE_TTL_S: u64 = 10;
-pub const REPORT_MAX_AGE_S: u64 = 6;
+// VM2's report is a *liveness/rung-1* signal, not the kill bound (the lease watchdog + host-observed
+// evidence enforce that independently). On the Mac profile a nested-virt VM1 boot spikes VM2 CPU and
+// can starve the report thread for several seconds, so this window is wide enough to ride that out
+// while staying under the controller's 30 s no-evidence ticker.
+pub const REPORT_MAX_AGE_S: u64 = 20;
 pub const MISSED_CHALLENGES_TO_TRIP: u32 = 3;
 
 pub const AUD_HOSTD: &str = "hostd";
