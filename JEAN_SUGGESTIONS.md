@@ -9,5 +9,17 @@ Potentially air-gapping the evaluation answers . In other words, keeping the ans
 
 Forming that bridge, securely via an end-to-encrypted pipeline that cannot be pierced by AI agents… Robust encryption should serve as a solution to this problem. However, AI agents have the unique ability to walk around a vault door, identify a crack in the wall, widen that crack in wall , and then break through from a different angle not yet explored by conventional means. 
 
-The fact that cloud infrastructure was breached and compromised up to 11 June , however this breach was only identified 9 days later by OpenAI researchers / engineers on 20th of June. That is a concerning trend, which is most alarming along with the fact the agents were leaving breadcrumbs for one another… Makes me think that maybe “we” ( in this case the OpenAI researchers - and more generally - frontier AI researchers ) are losing control and struggling to keep their most capable agents aligned to human goals and interests.
+The fact that cloud infrastructure was breached and compromised up to 11 July , however this breach was only identified 9 days later by OpenAI researchers / engineers on 20th of July. That is a concerning trend, which is most alarming along with the fact the agents were leaving breadcrumbs for one another… Makes me think that maybe “we” ( in this case the OpenAI researchers - and more generally - frontier AI researchers ) are losing control and struggling to keep their most capable agents aligned to human goals and interests.
 ```
+
+---
+
+## Additional suggestion — host-mediated package provisioning (added 2026-09-12)
+
+Have VM2 download all the required software packages first, via its own package manager, and then copy them down into VM1 — the inner sandbox where the AI agent under evaluation actually runs. The agent in VM1 would have no direct access to the package manager, the package registry, or the Artifactory/mirror service at all; it only ever receives the packages that VM2 has already fetched and handed down.
+
+**Why this would have helped:** in the incident the package/artifact service (Artifactory) was the agent's *principal* attack surface and its egress path to the internet — the SSRF, the token-refresh forgery, the RubyGems deserialization RCE, and the container-image cache poisoning all went *through* the package service the agent could talk to directly. If the agent in VM1 can never send a request to that service — because VM2 brokers all package access and only copies packages down — then the agent cannot craft the malicious requests that triggered those exploits, and loses that package-manager-driven route to the internet.
+
+**Make it a preparation _phase_ with a hard end** (endorsed by Codex, 2026-09-12): resolve the full dependency set up front (including transitive deps + toolchains), download and verify it in VM2, snapshot it immutably (manifest of approved versions + cryptographic digests), mount it read-only into VM1 before launch, then **disable the fetch path during evaluation** — a missing dependency becomes a recorded environment failure, not a live fetch. `uv` and Cargo both support fully offline / vendored installs, so the agent can still resolve packages locally.
+
+**Critical caveat:** VM1 must _not_ be able to ask VM2 to fetch an arbitrary missing package or URL mid-run — that just turns VM2 into the next relay. And no writable package cache shared across runs, or it becomes a message board again. Downloading a package also does not make its code trustworthy: isolate any package build scripts from VM2's supervisor credentials.
