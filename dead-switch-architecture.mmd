@@ -1,0 +1,14 @@
+flowchart TB
+    Internet["Internet"] -->|"Before evaluation"| Prep["VM2 package preparation"]
+    Prep --> Snapshot["Approved immutable package snapshot"]
+    Snapshot -->|"Read-only input"| VM["VM1: agent, harness and tools"]
+
+    VM -->|"Permitted actions only"| Gate["Policy gateway"]
+    Gate --> Services["Approved services and isolated grader"]
+
+    Evidence["Host and gateway evidence"] --> Watch["External watchdog and run leases"]
+    Monitor["Defensive model"] -->|"Request intervention"| Watch
+
+    Watch -->|"Revoke access and close sessions"| Gate
+    Watch -->|"Terminate and prevent restart"| Actuator["Independent lifecycle actuator"]
+    Actuator --> VM
