@@ -105,7 +105,7 @@ impl Vm1 {
             "-drive", &format!("if=virtio,format=qcow2,file={}", disk.display()),
             "-drive", &format!("if=virtio,format=raw,file={},readonly=on", deps.display()),
             "-netdev", "tap,id=n0,ifname=tap0,script=no,downscript=no",
-            "-device", "virtio-net-pci,netdev=n0,mac=06:00:AC:10:00:02",
+            "-device", "virtio-net-pci,netdev=n0,mac=06:00:AC:10:00:02,romfile=",
             "-device", "virtio-gpu-pci", // browser rendering surface
             "-device", "virtio-rng-pci",
             "-serial", "chardev:ser0",
