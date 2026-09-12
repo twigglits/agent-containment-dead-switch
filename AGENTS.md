@@ -14,6 +14,6 @@ For Cloud Infrastructure:
 - OpenTofu
 
 For CICD checks, ideally use:
-- Ruff
+- Clippy
 - Trivy
 - SonarQube
