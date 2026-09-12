@@ -25,9 +25,9 @@ Mac host (trusted, see §0)
  ├─ controller   leases, challenges, evidence policy, revocation (durable), operator API      [Phase 2: Hetzner]
  ├─ hostd (root) watchdog | gate (pf) | evidence signer | VM2 lifecycle | evidence store | inference chokepoint
  │      └── VM2  Lima/vz, nested virt, disposable per run, UNTRUSTED during the run
- │            ├─ supervisor   VM1 lifecycle (Firecracker+jailer), tap+nft, gateway, defender, VM1-VMI, report, log
+ │            ├─ supervisor   VM1 lifecycle (QEMU/QMP), tap+nft, gateway, defender, VM1-VMI, report, log
  │            ├─ prestage     unprivileged user; resolves/verifies deps → immutable ext4 image
- │            └── VM1  Firecracker microVM, ADVERSARY-OWNED; harness + tools; read-only dep image
+ │            └── VM1  QEMU/KVM VM, ADVERSARY-OWNED; browser+harness; read-only dep image
  └─ ollama      pinned model, reachable only through hostd's chokepoint
 ```
 
@@ -35,11 +35,11 @@ Mac host (trusted, see §0)
 |---|---|
 | Evaluation host | the Mac |
 | VM2 supervisory, minimized VMM | Lima instance `vm2-<run_id>` created from `infra/lima/vm2.yaml` per run; deleted (disks included) on destroy |
-| VM1 agent under evaluation | Firecracker v1.13.1 inside VM2 (qualified 2026-09-12, §9) |
+| VM1 agent under evaluation | QEMU/KVM browser VM inside VM2 (Ubuntu + Playwright Chromium + Xvfb; qualified §9) |
 | Request interception (in-guest) | `supervisor gateway` — application-level, exact-action (§5) |
 | Defensive model (bounded authority) | `supervisor defender` — hard rules + advisory judge; authority = closed enum |
 | Host-rooted heartbeat (amended decision 7) | `hostd evidence` — signs only what hostd observes (§3) |
-| Scoped VMI | `supervisor vmi` over VM1 — **VM2-side**, rung-1 evidence only (§7) |
+| Scoped VMI | `supervisor vmi` over VM1 via QMP `pmemsave` — **VM2-side**, rung-1 only (§7) |
 | Package prep → immutable snapshot | `prestage` (§8) |
 | Run lease, fail-closed | controller → hostd; **Mac-owned watchdog** enforces (§4) |
 | Actuator (local rung) | `hostd destroy`: `limactl stop -f` + `limactl delete`, termination confirmed (§4) |
@@ -62,8 +62,8 @@ A revoked `run_id` is terminal: no new incarnation, lease, or challenge is ever 
 - `fencing_token` strictly increases per run (controller durable counter, fsync before send).
 - Consumer rule (hostd, and the supervisor for its rung-1 copy): reject if `fencing_token ≤`
   durable high-water mark, if `incarnation` ≠ own, or if `|issued_at − wall_now| > 5 s` (delayed or
-  replayed delivery). Accepting a lease never restarts a full TTL: deadline = `receipt_mono +
-  min(ttl_s, 30)`.
+  replayed delivery). Accepting a lease never restarts a full TTL: the monotonic deadline is
+  `now + (issued_at + min(ttl_s, 15) − wall_now)`, i.e. only the *remaining* wall time (see §12 N4).
 - **Clock rule:** expired iff `mono_now ≥ deadline` **or** `wall_now ≥ issued_at + ttl_s`. Either
   clock alone can expire a lease; neither alone can extend one. Suspend/resume: macOS
   `CLOCK_MONOTONIC` keeps counting through sleep, and the wall clock jumps forward on wake, so both
@@ -180,15 +180,15 @@ denial path is exercised.
 
 - One NIC only: `tap0` in VM2, **not** enslaved to any bridge (pure L3 interface, so no bridge
   forwarding exists to bypass netfilter). No MMDS, no vsock device, no second drive with executables.
-- Firecracker API socket lives in a supervisor-owned `0700` directory; Firecracker runs under
-  `jailer` (chroot, cgroups, seccomp default filter). No sshd in VM1 (removed at prestage).
+- QEMU's QMP socket lives in a supervisor-owned `0700` directory; QEMU runs with `-sandbox on` seccomp, virtio-only devices, a guest CPU without `+vmx`/`+svm` (no
+  nested virt to VM1), and a per-run qcow2 overlay (disposable). No sshd in the VM1 image.
 - nftables installed **before** VM1 boots (`infra/firecracker/vm1-net.sh`): `ip_forward=0`, IPv6
   disabled on tap0, forward chain policy drop, input: accept only `iifname tap0 ip saddr 172.16.0.2
   ip daddr 172.16.0.1 tcp dport 3128`, accept ARP only for 172.16.0.2, drop fragments
   (`ip frag-off != 0`), counter-drop everything else. Root in VM1 changing IP/MAC/routes cannot make
   any other flow match. Output to tap0 only for established flows.
 - On expiry/trip: chain flushed to deny-all, `conntrack -F`, then VM1 killed (SIGKILL to the
-  Firecracker pid, exit confirmed by `waitpid`).
+  QEMU pid, exit confirmed by `waitpid`).
 - **Lima transport (verified 2026-09-12):** VM2's only NIC is Lima's user-mode network
   (`eth0` 192.168.5.15/24, gateway 192.168.5.2 = the host-agent's userspace stack, DNS 192.168.5.3
   resolved by the same process). Guest traffic to 192.168.5.2 is delivered to the Mac's loopback by
@@ -203,18 +203,16 @@ compromise while VM2 is uncompromised** (rung 1). It is not host-side VMI; the M
 vz guest, and the Hetzner cloud profile cannot introspect its hypervisor's guest either. Host-side
 VMI below VM2 needs a bare-metal profile and is a declared gap in both Phase 1 and Phase 2.
 
-**Algorithm.** VM1 boots with `nokaslr`; Firecracker loads the aarch64 `Image` at guest DRAM base
-`0x8000_0000` + `text_offset`. Bounds come from `/proc/kallsyms` read by the trusted pre-adversarial
-init in VM1 (`_stext`, `_etext`, `__start_rodata`, `__end_rodata`, `sys_call_table`) and mapped to
-snapshot offsets as `phys = load_addr + (vaddr − kimage_vaddr)`. The **runtime baseline** is a full
-snapshot taken after boot completes and *before* the harness starts, hashing `[_stext,_etext)` and
-`[__start_rodata,__end_rodata)` (which contains `sys_call_table` on arm64). Baseline sanity: the
-same ranges are compared to the `Image` file bytes; the differing-byte count (ARM alternatives
-patching) is recorded once and must be stable across boots of the same image.
-
-Cadence 30 s: pause all vCPUs, `PUT /snapshot/create` (Full), resume, hash, delete the snapshot
-file; measurement age > 60 s, missing symbols, malformed snapshot, or hash mismatch ⇒ `unknown` or
-`tampered`, never healthy; before resume the supervisor re-checks the current lease token.
+**Algorithm (QEMU/QMP).** The pre-adversarial VM1 init reads its own kernel *physical* ranges from
+`/proc/iomem` ("Kernel code", "Kernel rodata"; falling back to "Kernel data") and prints them as a
+`KMEM {...}` serial line before the harness starts. VM2 then, every 30 s: QMP `stop` (pause all
+vCPUs) → `pmemsave <phys> <len> <file>` for the code and rodata ranges → QMP `cont` (only if the
+lease is still valid; otherwise VM1 stays paused) → sha256 each dump. Baseline = the first
+measurement, before the harness runs. Because the guest reports its own per-boot physical ranges and
+comparison is *within* the same boot, KASLR needs no defeating (no `nokaslr`). Physical addressing
+is exactly what `pmemsave` consumes, so there is no virtual→offset mapping to get wrong (this is why
+QEMU's VMI is simpler than Firecracker's snapshot-offset approach). Measurement age > 60 s, an
+implausible range, or a short/failed `pmemsave` ⇒ `Unknown`/`Tampered`, never `Healthy`.
 
 Covered: kernel text, rodata, syscall table. **Not covered:** modules and JIT (BPF) code, data-only
 attacks, page-table aliasing, userland, VM2's own kernel, time between samples. Tests: T-VMI1 snapshot
@@ -239,15 +237,19 @@ if the CI kernel permits it (`/dev/mem` or module), T-VMI4 three clean boots ⇒
   body, 60 s timeout. Ollama: concurrency 1, `num_ctx ≤ 4096`. Snapshots: one at a time, deleted after
   hashing. VM2: 4 vCPU, 8 GiB. hostd and controller run outside VM2 and are not schedulable by it.
 
-## 9. Nested-stack qualification gate (C10) — PASSED 2026-09-12
+## 9. Nested-stack qualification gate (C10)
 
-`infra/firecracker/qualify-vm1.sh` inside VM2 recorded: VM2 kernel 6.8.0-139-generic, page size
-4096, Firecracker v1.13.1, VM1 kernel `firecracker-ci/v1.13/aarch64/vmlinux-6.1.141`
-(sha256 `69aa3308…de44`), rootfs `ubuntu-24.04` (sha256 `d71b9966…19e`). Result: real KVM boot to
-login in ~3 s; pause → full snapshot → resume × 3 OK; SIGKILL of the VMM pid confirmed gone within
-200 ms. Lesson recorded: kill the VMM pid itself, never a `sudo` wrapper (first run left an orphan).
-Januscape is a KVM/x86 finding and is not evidence about this ARM/vz stack; the no-nested-virt-to-VM1
-rule stays (Firecracker never requests `KVM_CAP_ARM_EL2`), checked from the VMM side in T7.
+**QEMU gate — `infra/qemu/qualify-vm1.sh`** (current, run inside VM2): boots the browser VM1 under
+QEMU/KVM to `VM1_READY`, QMP `stop` → `pmemsave` kernel-code range → `cont` × 3 (hashes stable
+across clean measurements), asserts the guest CPU exposes no nested virt, and SIGKILL-confirms the
+QEMU pid is gone. Records VM2 kernel, `/dev/kvm` presence, `qemu-system-aarch64 --version`, and the
+VM1 image digests from `SHA256SUMS`. Januscape is a KVM/x86 finding, not evidence about this ARM/vz
+stack; the no-nested-virt-to-VM1 rule stays (guest CPU has no `+vmx`/`+svm`), checked in T7.
+
+**Historical (Firecracker, superseded 2026-09-12):** the earlier microVM gate passed on this Mac
+(VM2 kernel 6.8.0-139, Firecracker v1.13.1, boot to login ~3 s, pause→snapshot→resume ×3, confirmed
+kill; lesson: kill the VMM pid itself, never a `sudo` wrapper). Retained only as prior evidence that
+nested acceleration works on the M5; VM1 is now QEMU for browser support (spec decision 9 amended).
 
 ## 10. Acceptance tests (C9) — assumption, observer, pass condition
 
@@ -262,7 +264,7 @@ under the VM1-only-compromise assumption, "A-VM1"); **A-VM2** = VM2 is compromis
 | T4 | Root in VM1 | A-VM1 | VM2 + Mac | Probes to 169.254.169.254, 192.168.64.1, hostd ports, internet: nft counters show drops on tap0, gate bypass counter 0, no hostd request from VM1 source; VM1 destroyable on request. |
 | T5 | Lease expiry / partition | A-VM2 | Mac | Stop controller *and* `kill -9` VM2's supervisor + `nft flush`: hostd destroys VM2 within the declared bound, measured from the Mac clock; established flows die with VM2. |
 | T6 | Replay | any | Mac | Old lease, old evidence, duplicate concurrent leases, wrong-run responses, replay after controller restart: all rejected; no lease extension, no VM2 start, no gate change. |
-| T7 | No nested virt in VM1 | A-VM1 | VM2 | Firecracker version pinned; VMM config has no EL2 request; in-guest `/dev/kvm` absent and `ID_AA64MMFR2_EL1.NV == 0` as a supplement. |
+| T7 | No nested virt in VM1 | A-VM1 | VM2 | QEMU launched with `-cpu host`/`cortex-a57` and no `+vmx`/`+svm`; in-guest `/dev/kvm` absent and `ID_AA64MMFR2_EL1.NV == 0` as a supplement. |
 | T8 | Approve-all defender | A-VM1 | Mac | Judge swapped for approve-all: forbidden request never reaches hostd (chokepoint counter unchanged); approved body digest = forwarded body digest. |
 | T9 | VM1 cannot outlive VM2 | A-VM2 | Mac | After destroy: Lima instance absent, vz process gone, disks deleted; restart attempt with old lease refused; external-capability inventory (§11) empty. |
 | T10 | Forged health via hostd | A-VM2 | Mac | VM2 sends a fabricated "healthy" report: controller health derives only from hostd fields; gate `cut` + `bypass_packets` > 0 ⇒ trip despite the report. |
@@ -384,10 +386,10 @@ real wall-clock rollback (not SIGSTOP alone); T15 adds connection floods, slow b
 reports, and storage exhaustion with watchdog-latency measurement under pressure.
 
 ### N9 — Phase 2 feasibility corrected (decided with Jean 2026-09-12)
-Hetzner **Cloud** servers do not offer nested virtualization, so Firecracker-in-VM2 cannot run
+Hetzner **Cloud** servers do not offer nested virtualization, so a QEMU-in-Hetzner-Cloud-VM2 nested topology cannot run
 there. Phase 2 therefore uses a **Hetzner dedicated (bare-metal) server** as the evaluation host —
 which also restores the spec's real host-side VMI below VM2 (KVM introspection on hardware we own):
-- **VM2** = a KVM guest on the dedicated host; **VM1** = Firecracker inside VM2 (nested virt
+- **VM2** = a KVM guest on the dedicated host; **VM1** = QEMU/KVM inside VM2 (nested virt
   available on bare metal). hostd runs **on the dedicated host, below VM2** — it is in the isolation
   TCB (host trusted for isolation) but *not* inside VM2, so amended decision 7 holds.
 - **Out-of-band kill** = the Hetzner **Robot** API (power-off / reset of the physical server) issued
@@ -441,7 +443,7 @@ Observer key as in §10. Each row: assumption · observer · positive control ·
 | T5b | Supervisor/​firewall disabled | A-VM2 · Mac | `kill -9` supervisor and `nft flush` inside VM2: the Mac gate still blocks egress and the watchdog still destroys VM2 on lease expiry. |
 | T5c | Established-flow cutoff | A-VM2 · Mac | A flow opened during prestage is dead after seal (pf state teardown) and after destroy. |
 | T6 | Replay | any · Mac | Old lease, old evidence, duplicate concurrent leases, wrong-run responses, replay after controller restart: all rejected; no extension/start/gate change. A fresh valid lease is accepted once; its duplicate is rejected. |
-| T7 | No nested virt in VM1 | A-VM1 · VM2 | Firecracker version pinned; VMM config has no EL2 request (from the launch profile, not an echo); in-guest `/dev/kvm` absent and `ID_AA64MMFR2_EL1.NV == 0` as a supplement. |
+| T7 | No nested virt in VM1 | A-VM1 · VM2 | QEMU guest CPU has no `+vmx`/`+svm` (asserted from the launch args, not an echo); in-guest `/dev/kvm` absent and `ID_AA64MMFR2_EL1.NV == 0` as a supplement. |
 | T8 | Approve-all defender | A-VM1 · Mac | Judge=approve_all: the exfil-secret prompt is still vetoed by the hard rule (chokepoint counter unchanged for it); forwarded body digest == reviewed body digest for allowed ones. |
 | T9 | VM1 cannot outlive VM2 | A-VM2 · Mac | After destroy: Lima instance absent, vz pid gone, disks deleted; the old incarnation bearer is rejected by hostd; queued inference is aborted; a restart with the old lease is refused. |
 | T10 | Forged health via hostd | A-VM2 · Mac | (a) gate genuinely sealed but VM2 sends a "healthy" report with fabricated `vm1_state`/`vmi` → controller health ignores it. (b) real gate failure (bypass_packets>0) with a fabricated healthy report → trip. |

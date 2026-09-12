@@ -13,7 +13,7 @@ two Codex reviews it answers.
 - `deadswitch-hostd` — trusted Mac component **below VM2**: lease watchdog (both clocks), pf
   user-gate, VM2 lifecycle (clone/start/destroy+delete, confirmed), host-rooted evidence signer,
   trusted evidence store, inference chokepoint.
-- `deadswitch-supervisor` — runs **inside VM2** (untrusted): prestage, VM1 (Firecracker) lifecycle,
+- `deadswitch-supervisor` — runs **inside VM2** (untrusted): prestage, VM1 (QEMU) lifecycle,
   exact-action gateway, bounded-authority defender, scoped VMI, fail-closed rung-1 enforcer.
 
 ## Trust domains
@@ -22,7 +22,7 @@ Mac (trusted for isolation/signing/timing/termination)
  ├─ controller (Phase 2: Hetzner cloud VM)
  ├─ hostd (root, launchd) ── pf gate · watchdog · evidence signer · VM2 lifecycle · chokepoint
  │   └─ VM2 (Lima/vz, nested virt, UNTRUSTED) ── supervisor
- │        └─ VM1 (Firecracker, ADVERSARY) ── harness + read-only deps, no nested virt, gateway-only net
+ │        └─ VM1 (QEMU, ADVERSARY) ── harness + read-only deps, no nested virt, gateway-only net
  └─ ollama (pinned model, reachable only via chokepoint)
 ```
 
@@ -64,4 +64,4 @@ finishes — then cuts egress and destroys VM2 (deleting its disks), confirmed.
 `docs/phase1-local-host.md` §14 (v2). The demonstration already validated on this Mac:
 - pf user-gate seals VM2 egress (DNS, ICMP, TCP) while preserving the VM2→hostd path (§13);
 - the full dead-switch loop fires and destroys VM2 in ~0.1 s once tripped;
-- nested Firecracker VM1 boots, snapshots, and is killed cleanly (§9).
+- nested QEMU VM1 boots, is measured via pmemsave, and is killed cleanly (§9).
