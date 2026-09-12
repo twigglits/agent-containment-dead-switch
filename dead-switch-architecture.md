@@ -49,9 +49,16 @@ host-side VMI we want**. So the host is trusted for isolation, but the kill is m
 6. **Scoped host-side VMI.** Specific, *named* kernel-integrity measurements with stated coverage and
    blind spots — trusted because the host is trusted for isolation. Comprehensive kernel-memory
    monitoring is deferred.
-7. **NitroTPM-signed, fail-closed heartbeat** VM2 → off-host controller (freshness-nonced). A
-   compromised host can drop or delay it but **cannot forge a "healthy" one**; missing/stale/invalid ⇒
-   trip. The hardware root is swappable to SEV-SNP/TDX later **without redesigning the dead switch.**
+7. **Host-rooted, fail-closed heartbeat** (amended 2026-09-12 after Codex review; approved by Jean).
+   The heartbeat is signed by a root *below VM2* (NitroTPM / hostd on the eval host / the cloud
+   control plane) and contains **only what that root observes itself**: the VM2 incarnation identity
+   (boot-time measurement / instance identity), its configuration digest, the network-gate state and
+   bypass counters, and the watchdog's lease state. VM2's own report is carried as *explicitly
+   untrusted* evidence and is never promoted to "healthy". It is freshness-nonced; a compromised VM2
+   can drop or delay it but **cannot forge a "healthy" one**; missing/stale/invalid ⇒ trip. A TPM
+   quote proves boot-time identity, not continuous runtime integrity; runtime health is a controller
+   *policy* over host-observed evidence. The root is swappable to SEV-SNP/TDX later **without
+   redesigning the dead switch.**
 8. **Host-independent, out-of-band kill.** Primary actuator = cloud control-plane `Terminate` (runs
    off-host, e.g. AWS Nitro's separate-NIC design the guest/host can't forge or block) + an external
    network chokepoint; co-resident hypervisor destroy is a redundant secondary.
@@ -82,6 +89,9 @@ host-side VMI we want**. So the host is trusted for isolation, but the kill is m
 - **Three distinct functions (A3):** **evidence/measurement** (VMI + gateway observations + the
   hardware-anchored heartbeat) → **authorization** (the run lease — permission, not integrity) →
   **enforcement/termination** (the off-host actuator).
+- **Lease expiry is enforced below VM2** (Mac hostd watchdog / cloud actuator), never only inside
+  VM2, and the evaluation VM is disposable per run: destroy deletes its disks so no restart path
+  exists (amended 2026-09-12 after Codex review).
 - **Load-bearing invariant: VM1 cannot outlive VM2.** "Delete VM2 ⇒ VM1 dies" holds only if VM1 has
   no external persistence, credentials, egress, or spawned successors. This is an explicit invariant
   and acceptance test, not an assumption.

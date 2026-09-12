@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/common", "crates/controller", "crates/supervisor", "crates/hostd"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+deadswitch-common = { path = "crates/common" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ed25519-dalek = { version = "2", features = ["rand_core", "pem"] }
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2"
