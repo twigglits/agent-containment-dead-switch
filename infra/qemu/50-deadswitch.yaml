@@ -1,0 +1,13 @@
+network:
+  version: 2
+  ethernets:
+    vm1nic:
+      match:
+        macaddress: "06:00:ac:10:00:02"
+      set-name: vm1nic
+      addresses: [172.16.0.2/30]
+      routes:
+        - to: default
+          via: 172.16.0.1
+      nameservers:
+        addresses: [172.16.0.1]

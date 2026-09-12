@@ -1,0 +1,11 @@
+[Unit]
+Description=deadswitch VM1 pre-adversarial init + harness
+After=network.target
+Wants=network.target
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/deadswitch-vm1-init
+StandardOutput=journal
+Restart=no
+[Install]
+WantedBy=multi-user.target
