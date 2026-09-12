@@ -2,37 +2,37 @@ flowchart TB
     Prep["VM2 package prep (pre-eval)"] --> Snap["Approved immutable snapshot"]
 
     subgraph OFFHOST["Off-host controller (separate node)"]
-      Verify["Attestation verifier"]
-      Lease["Dead switch + run leases"]
-      Actuator["Actuator + network enforcement"]
+      Verify["Heartbeat verifier (freshness + signature)"]
+      Lease["Dead switch + run leases (fail-closed)"]
+      Actuator["Out-of-band actuator (cloud control-plane Terminate)"]
       Choke["External network chokepoint"]
     end
 
-    subgraph HOST["Evaluation host (untrusted at runtime)"]
-      subgraph VM2["VM2 — supervisory"]
+    subgraph HOST["Evaluation host (trusted for isolation)"]
+      subgraph VM2["VM2 — supervisory (minimized VMM)"]
         subgraph VM1["VM1 — agent under evaluation"]
           Agent["Model + harness + tools"]
         end
         Intercept["Request interception (in-guest)"]
         Defender["Defensive model (bounded authority)"]
+        HB["NitroTPM-signed heartbeat"]
       end
       VMI["Scoped VMI (host-side)"]
     end
 
-    TPM["Hardware root of trust<br/>(TPM: measured boot + attestation)"]
-
     Snap -->|"read-only"| VM1
     Agent -->|"permitted actions only"| Intercept
     Defender -.->|"observe"| Agent
-    Intercept -->|"egress"| Choke
+    Intercept -->|"egress (default-deny)"| Choke
     Choke --> Services["Approved services"]
     Choke -->|"bounded submission ingress"| Grader["Isolated grading (network-isolated)"]
     Grader -->|"controlled score release"| Results["Trusted results store / operator"]
 
-    TPM -->|"attestation"| Verify
+    HB -->|"fresh signed heartbeat"| Verify
     VMI -->|"guest-integrity evidence"| Lease
-    Verify -->|"host trusted only if valid"| Lease
     Defender -->|"request veto/pause/terminate"| Lease
+    Verify -->|"stale/invalid/missing ⇒ trip"| Lease
     Lease -->|"revoke / stop renewal"| Actuator
     Actuator -->|"cut egress"| Choke
-    Actuator -->|"stop host / VM2 (stops VM1)"| HOST
+    Actuator -->|"terminate VM2 → stops VM1"| VM2
+    Actuator -.->|"redundant: hypervisor destroy"| HOST
