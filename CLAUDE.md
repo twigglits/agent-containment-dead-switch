@@ -12,7 +12,7 @@ Claude must **not** perform any write operations to git or GitHub repositories. 
 When referencing documentation for AWS / Terraform , always do it through
 your plugins and / or MCP connection to AWS / Terraform docs respetively.
 
-- **NEVER** set yourself ( Claude ) as the author on a git commit. I, Jean Naude, jean@overdrive.co.za  am the author of any and all commits.
+- **NEVER** set yourself ( Claude ) as the author on a git commit. I, Jean Naude, jnaude60512@gmail.com , twigglits am the author of any and all commits.
 - **Do NOT** run `git add`, `git commit`, or `git push`.
 - **Do NOT** run any other command that modifies repository or remote state (e.g. `git merge`, `git rebase`, `git reset`, `git tag`, `git stash`, `git cherry-pick`, force-pushes, or GitHub write operations via `gh`/the API such as creating PRs, merging, or pushing branches).
 - In **exception** cases where I do give you explicit consent to git commit changes, 
