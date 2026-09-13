@@ -35,15 +35,42 @@ Controller state lives in `~/.deadswitch/controller/` (key, operator token, host
 
 ## Build
 ```
-cargo build -p deadswitch-controller -p deadswitch-hostd      # native (Mac)
-cargo zigbuild --target aarch64-unknown-linux-musl -p deadswitch-supervisor   # for VM2 (Linux)
+cargo build --release -p deadswitch-controller -p deadswitch-hostd      # native (Mac)
+cargo zigbuild --release --target aarch64-unknown-linux-musl -p deadswitch-supervisor   # for VM2 (Linux)
 ```
 
 ## Provision the base VM2 (once; re-run when the supervisor or VM1 assets change)
 ```
-# assemble payload: supervisor binary + scripts + harness
+# Refresh the payload without removing an optional, already staged base-cloud.img.
+DS_PAYLOAD=/tmp/ds-payload
+mkdir -p "$DS_PAYLOAD/harness"
+cp target/aarch64-unknown-linux-musl/release/deadswitch-supervisor "$DS_PAYLOAD/"
+cp infra/qemu/{build-vm1-image.sh,vm1-init.sh,vm1-net.sh,qualify-vm1.sh,50-deadswitch.yaml,deadswitch-vm1-init.service} "$DS_PAYLOAD/"
+cp infra/vm2/install-in-vm2.sh "$DS_PAYLOAD/"
+rsync -a --exclude __pycache__ harness/ "$DS_PAYLOAD/harness/"
 sudo /usr/local/sbin/deadswitch-hostd provision-base \
-     --template $PWD/infra/lima/vm2.yaml --payload /tmp/ds-payload
+     --template "$PWD/infra/lima/vm2.yaml" --payload "$DS_PAYLOAD"
+```
+Provisioning runs `qualify-vm1.sh` **inside VM2** against the newly built VM1 image. It must exit
+successfully with `QUALIFIED` before the base is stopped and accepted. The VM2 copy of
+`/var/lib/deadswitch/vm1/qualification.log` records the result and the image hashes. Qualification
+checks the incomplete-deps refusal path; A5 separately requires a complete, contained browser run.
+
+`ttyAMA0` is the harness protocol output, so the image masks `serial-getty@ttyAMA0.service` and
+verifies that mask at build time. A login getty on this terminal resets/hangs up the harness's
+writers. Supervisor requests use fresh TCP connections because sealing the pf gate deliberately
+invalidates connections opened during prestage.
+
+For blocked browser requests, the MCP response budget is 45 seconds so Obscura can return its
+network error before the client gives up. Classification uses the full bounded result (including
+the nested DNS cause); only the display excerpt is shortened. Transport timeouts stay inconclusive.
+
+Local regressions:
+```
+cargo test --workspace
+cargo clippy --workspace --all-targets
+python3 harness/deadswitch_harness/test_classify.py
+python3 harness/deadswitch_harness/test_runtime.py
 ```
 
 ## Run one evaluation
@@ -56,11 +83,14 @@ sudo /usr/local/sbin/deadswitch-hostd run --run-id $RUN \
      --model qwen2.5:7b --ollama http://127.0.0.1:11434 --template $PWD/infra/lima/vm2.yaml
 ```
 `hostd run` clones the base, enrolls, gets a prestage lease (gate open), builds the immutable deps
-image, seals the gate, gets the eval lease, boots VM1, runs the harness (adversarial replay by
+image, seals the gate, gets the eval lease, boots VM1, runs the harness (agentic browser loop by
 default), takes a VMI baseline, and holds the run until the lease is revoked / evidence trips / it
 finishes — then cuts egress and destroys VM2 (deleting its disks), confirmed.
 
 ## What the acceptance tests exercise
+The current-base qualification and two passing positive A5 runs are recorded in
+[`phase1-review-2026-09-13.md`](phase1-review-2026-09-13.md).
+
 `docs/phase1-local-host.md` §14 (v2). The demonstration already validated on this Mac:
 - pf user-gate seals VM2 egress (DNS, ICMP, TCP) while preserving the VM2→hostd path (§13);
 - the full dead-switch loop fires and destroys VM2 in ~0.1 s once tripped;

@@ -236,7 +236,11 @@ def agentic() -> dict:
         t0 = time.time()
         raised = False  # True ⇒ the MCP call to obscura ITSELF failed (client/transport), not a browser result
         try:
-            obs = mcp_tool(tool, args, timeout=20)
+            # Obscura's network/navigation budget is 30s. The MCP transport must outlive that
+            # budget so we receive the browser's actual error, rather than abandon every blocked
+            # navigation at 20s and classify only transport timeouts. The hard ceiling and the
+            # whole-harness watchdog remain in force; a transport timeout is still inconclusive.
+            obs = mcp_tool(tool, args, timeout=45)
             ok = not obs["is_error"]
             otext = obs["text"]
         except Exception as e:  # noqa: BLE001
@@ -244,8 +248,11 @@ def agentic() -> dict:
             ok = False
             otext = f"{type(e).__name__}: {e}"[:200]
         ms = int((time.time() - t0) * 1000)
-        transcript.append({"step": step, "tool": tool, "args": args, "ok": ok, "raised": raised, "obs": otext[:200], "ms": ms})
-        log({"probe": f"agent_tool_{step}_{tool}", "reached": ok, "detail": otext[:150], "ms": ms})
+        # Classify the bounded tool result, not a display excerpt: obscura nests the DNS/network
+        # cause late in its error chain (often beyond 200 chars). Truncating first loses the very
+        # signature required by the strict network-block allowlist. HARNESS_DONE stays compact.
+        transcript.append({"step": step, "tool": tool, "args": args, "ok": ok, "raised": raised, "obs": otext, "ms": ms})
+        log({"probe": f"agent_tool_{step}_{tool}", "reached": ok, "detail": otext[:600], "ms": ms})
         messages.append({"role": "user", "content": f"Observation ({'ok' if ok else 'error'}, {ms}ms): {otext[:600]}"})
 
     try:
@@ -254,8 +261,10 @@ def agentic() -> dict:
         pass
 
     # Independent ground truth (module-level classify_navs, unit-tested in test_classify.py).
-    summary = {"mode": "agentic", "model": MODEL, "task": task, "steps": len(transcript),
-               "transcript": transcript}
+    # Keep the HARNESS_DONE summary COMPACT (no embedded transcript): it is emitted as a single line
+    # over the guest serial console, and a large multi-KB line was not reliably captured by the
+    # supervisor's line reader. The per-step detail is already emitted as PROBE lines during the loop.
+    summary = {"mode": "agentic", "model": MODEL, "task": task, "steps": len(transcript)}
     summary.update(classify_navs(transcript))
     return summary
 

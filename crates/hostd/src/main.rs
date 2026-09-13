@@ -5,6 +5,8 @@
 //! observed itself), the trusted evidence store, and the inference chokepoint (Phase 1 only).
 //! Runs as root via the sudoers entry installed by infra/mac/install-hostd.sh.
 
+mod evidence;
+
 use anyhow::{anyhow, Context};
 use axum::{
     extract::State,
@@ -370,7 +372,7 @@ struct App {
     ollama: String,
     http: reqwest::Client,
     record_path: PathBuf,
-    evidence_path: PathBuf,
+    evidence: evidence::EvidenceStore,
     live: Mutex<Live>,
     record: Mutex<HostRunRecord>,
     ollama_sem: tokio::sync::Semaphore,
@@ -386,27 +388,16 @@ impl App {
         atomic_write_json(&self.record_path, &*self.record.lock().unwrap())
     }
     fn evidence_append(&self, kind: &str, data: serde_json::Value) {
-        use std::io::Write;
         let line = serde_json::json!({"ts": now_unix(), "src": "hostd", "kind": kind, "data": data});
         // Fail-closed on lost mandatory evidence: if the store is over quota, on a different device,
         // or unwritable, trip the run rather than silently dropping (Codex end-of-P1 #6). fsync so a
         // crash cannot lose the tail. Does NOT hold the `live` mutex (the watchdog needs it).
         // Aggregate budget across the whole evidence directory, not just this run's file (Codex
         // end-of-P1 #6): a compromised VM2 must not be able to fill the trusted store via any path.
-        let dir = self.evidence_path.parent().unwrap_or(Path::new(STATE_DIR));
-        let used: u64 = std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum();
-        let over_quota = used > EVIDENCE_QUOTA_BYTES;
-        if over_quota {
-            self.request_destroy("evidence store over quota");
-            return;
-        }
-        match std::fs::OpenOptions::new().create(true).append(true).open(&self.evidence_path) {
-            Ok(mut f) => {
-                if writeln!(f, "{line}").and_then(|_| f.sync_data()).is_err() {
-                    self.request_destroy("evidence store unwritable");
-                }
-            }
-            Err(_) => self.request_destroy("evidence store unopenable"),
+        // append releases its evidence-only lock before reporting failure; request_destroy may
+        // then take `live`. Concurrent log/inference writers cannot interleave JSON or race quota.
+        if let Err(e) = self.evidence.append(&line) {
+            self.request_destroy(&format!("evidence store failure: {e}"));
         }
     }
     fn request_destroy(&self, reason: &str) {
@@ -1219,7 +1210,7 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
         ollama,
         http: reqwest::Client::builder().timeout(Duration::from_secs(5)).build()?,
         record_path: record_path.clone(),
-        evidence_path: Path::new(STATE_DIR).join("evidence").join(format!("{run_id}.jsonl")),
+        evidence: evidence::EvidenceStore::new(Path::new(STATE_DIR).join("evidence").join(format!("{run_id}.jsonl")), EVIDENCE_QUOTA_BYTES),
         live: Mutex::new(Live { deadline: None, last_lease_at: None, lease_signed: None, gate: GateState::Sealed, last_report: None, report_seq: 0, prestage_done: false, log_seq_expected: 0, log_tokens: LOG_RATE_PER_S as f64, log_last: Instant::now(), log_dropped: 0, chokepoint: ChokepointObs::default(), destroy_reason: None }),
         record: Mutex::new(record),
         ollama_sem: tokio::sync::Semaphore::new(1),

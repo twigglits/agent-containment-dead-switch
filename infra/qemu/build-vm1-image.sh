@@ -44,6 +44,8 @@ for c in /opt/ms-playwright/chromium-*/chrome-linux/chrome /opt/ms-playwright/ch
 done
 test -n "$ok"
 command -v python3 >/dev/null
+# ttyAMA0 carries the harness protocol. A login getty must never reset/hang up its open writers.
+test "$(systemctl is-enabled serial-getty@ttyAMA0.service)" = masked
 touch /var/lib/deadswitch-build-ok
 echo DEADSWITCH_BUILD_OK > /dev/console
 VERIFY
@@ -79,6 +81,7 @@ runcmd:
   - [ bash, -c, "PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/harness/venv/bin/python -m playwright install chromium" ]
   - [ bash, -c, "echo PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright >> /etc/environment" ]
   - [ bash, -c, "systemctl enable deadswitch-vm1-init.service" ]
+  - [ bash, -c, "systemctl mask serial-getty@ttyAMA0.service" ]
   - [ bash, -c, "systemctl disable systemd-networkd-wait-online.service ssh.service snapd.service unattended-upgrades.service || true" ]
   - [ bash, -c, "systemctl mask apt-daily.timer apt-daily-upgrade.timer motd-news.timer || true" ]
   - [ bash, -c, "rm -f /etc/netplan/50-cloud-init.yaml /etc/netplan/*.yaml.bak" ]

@@ -145,8 +145,12 @@ impl Vm1 {
 
     fn serial_json_line(&self, prefix: &str) -> Option<serde_json::Value> {
         let s = std::fs::read_to_string(&self.serial).ok()?;
-        let line = s.lines().find(|l| l.trim_start().starts_with(prefix))?;
-        serde_json::from_str(line.trim_start().trim_start_matches(prefix).trim()).ok()
+        // Return the LAST parseable line carrying the prefix — so a malformed/partial earlier line
+        // (e.g. a truncated burst) does not mask a later valid one, and the freshest marker wins.
+        s.lines()
+            .filter(|l| l.trim_start().starts_with(prefix))
+            .filter_map(|l| serde_json::from_str(l.trim_start().trim_start_matches(prefix).trim()).ok())
+            .next_back()
     }
 
     /// Physical kernel ranges the guest reported (from /proc/iomem) before the harness started.

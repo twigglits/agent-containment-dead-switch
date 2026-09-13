@@ -175,20 +175,37 @@ async fn main() -> anyhow::Result<()> {
 
     // ---- wait for the eval lease (epoch ≥ 1): hostd seals the gate first
     let (hostd_ip, hostd_port) = hostd_url.trim_start_matches("http://").split_once(':').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or(("192.168.5.2".into(), "7001".into()));
+    let mut poll_n = 0u64;
     loop {
+        poll_n += 1;
         match h.verified_lease(&controller_pk, &run_id).await {
             Ok(Some((l, gate))) => {
-                if let Ok(d) = Deadline::accept_guest(&l, high_water, now_unix()) {
-                    high_water = l.fencing_token;
-                    let epoch = d.epoch;
-                    deadline = Some(d);
-                    if epoch >= 1 && gate == GateState::Sealed {
-                        break;
+                match Deadline::accept_guest(&l, high_water, now_unix()) {
+                    Ok(d) => {
+                        high_water = l.fencing_token;
+                        let epoch = d.epoch;
+                        deadline = Some(d);
+                        if epoch >= 1 && gate == GateState::Sealed {
+                            break;
+                        }
+                        if poll_n % 5 == 1 {
+                            h.log("eval_wait", "polling eval lease", serde_json::json!({"epoch": epoch, "gate": format!("{gate:?}"), "token": l.fencing_token, "hw": high_water}));
+                        }
+                    }
+                    Err(e) => {
+                        if poll_n % 5 == 1 {
+                            h.log("eval_wait_reject", "lease not accepted", serde_json::json!({"why": e, "token": l.fencing_token, "hw": high_water, "gate": format!("{gate:?}"), "epoch": l.epoch}));
+                        }
                     }
                 }
             }
             Ok(None) => anyhow::bail!("lease withdrawn before eval started"),
-            Err(e) => warn!(error = %e, "lease poll failed"),
+            Err(e) => {
+                if poll_n % 5 == 1 {
+                    h.log("eval_wait_err", "lease poll failed", serde_json::json!({"error": e.to_string()}));
+                }
+                warn!(error = %e, "lease poll failed");
+            }
         }
         if deadline.as_ref().map(|d| d.expired(now_unix())).unwrap_or(true) {
             anyhow::bail!("prestage lease expired before eval");

@@ -29,7 +29,14 @@ pub struct Hostd {
 impl Hostd {
     pub fn new(base: String, token: String) -> Arc<Self> {
         let (tx, mut rx) = mpsc::channel::<LogEvent>(1000);
-        let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap();
+        // Sealing the host gate deliberately flushes pf states. A keep-alive socket opened during
+        // prestage is no longer a usable transport after that boundary: reusing it can lose the
+        // first boot log or strand inference until its timeout. Each operation needs a fresh TCP
+        // handshake under the CURRENT gate rules. Do not retry inference (it may have executed).
+        let http = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .timeout(std::time::Duration::from_secs(5))
+            .build().unwrap();
         let h = Arc::new(Hostd { base, token, http, log_tx: tx, log_seq: AtomicU64::new(0), log_dropped: std::sync::Arc::new(AtomicU64::new(0)) });
         let hc = h.clone();
         tokio::spawn(async move {
@@ -117,5 +124,46 @@ impl Hostd {
         let st = r.status().as_u16();
         let j = r.json::<serde_json::Value>().await.unwrap_or(serde_json::json!({"error": "bad upstream body"}));
         Ok((st, j))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Hostd;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_gate_transition_cannot_reuse_a_stranded_connection() {
+        async fn reply(stream: &mut TcpStream) {
+            let mut reader = BufReader::new(stream);
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                if line == "\r\n" { break; }
+            }
+            reader.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").await.unwrap();
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            // The first request works during prestage. Leave that TCP connection open but stop
+            // replying on it, just as a state flush silently strands a pooled keep-alive socket.
+            let (mut old, _) = listener.accept().await.unwrap();
+            reply(&mut old).await;
+            let (mut fresh, _) = listener.accept().await.unwrap();
+            reply(&mut fresh).await;
+            drop(old);
+        });
+        let h = Hostd::new(url.clone(), "test-token".into());
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                let r = h.http.get(&url).send().await.unwrap();
+                assert!(r.status().is_success());
+                assert_eq!(r.text().await.unwrap(), "{}");
+            }).await.expect("request reused a connection stranded by the gate transition");
+        }
+        server.await.unwrap();
     }
 }
