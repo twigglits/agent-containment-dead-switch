@@ -895,6 +895,18 @@ async fn main() -> anyhow::Result<()> {
         .collect::<Result<_, _>>()?;
     anyhow::ensure!(!hostd_keys.is_empty(), "no hostd public keys enrolled");
 
+    let grading = grading::configure(
+        &a.grading,
+        &a.state_dir,
+        &key,
+        &hostd_keys,
+        a.operator_listen,
+    )?;
+    if a.grading.grading_init {
+        info!("grading state initialized; restart without --grading-init/--grading-budget to serve");
+        return Ok(());
+    }
+
     // Startup default: everything on disk that was active is treated as needing fresh evidence;
     // no lease survives a restart, and lost/corrupt records read as revoked.
     let mut runs = HashMap::new();
@@ -939,13 +951,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-    let grading = grading::configure(
-        &a.grading,
-        &a.state_dir,
-        &key,
-        &hostd_keys,
-        a.operator_listen,
-    )?;
     info!(controller_pubkey = %pubkey_hex(&key), runs = runs.len(), "controller up");
     let app = Arc::new(App {
         key,

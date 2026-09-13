@@ -298,3 +298,115 @@ async fn main() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deadswitch_common::grading::{encode_dispatch, GradingJob, AUD_GRADER, INPUT_VERSION, JOB_TYPE, SCORER_VERSION, TASK_ID};
+    use deadswitch_common::{random_hex, Signed, PROTO_V};
+
+    struct Fixture {
+        root: PathBuf,
+        intake: Intake,
+        receiver: mpsc::Receiver<PendingJob>,
+        key: SigningKey,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!("grader-intake-{}", random_hex(16)));
+            let key = SigningKey::from_bytes(&[11; 32]);
+            let binding = Binding {
+                controller_public_key: pubkey_hex(&key),
+                scorer_public_key: pubkey_hex(&SigningKey::from_bytes(&[12; 32])),
+                expected_output_digest: sha256_hex(b"42\n"),
+            };
+            Store::initialize(&root, binding.clone()).unwrap();
+            let store = Store::open(StateLock::acquire(&root).unwrap(), &binding).unwrap();
+            let (sender, receiver) = mpsc::channel(1);
+            Self {
+                root,
+                key: key.clone(),
+                intake: Intake {
+                    store: Arc::new(Mutex::new(store)),
+                    controller_key: key.verifying_key(),
+                    pending: sender,
+                    in_flight: Arc::new(AtomicBool::new(false)),
+                    stopping: Arc::new(AtomicBool::new(false)),
+                    request_slots: Arc::new(Semaphore::new(8)),
+                },
+                receiver,
+            }
+        }
+
+        fn frame(&self, token: u64, bytes: &[u8]) -> Vec<u8> {
+            let job = GradingJob {
+                v: PROTO_V, kind: JOB_TYPE.into(), aud: AUD_GRADER.into(),
+                job_id: format!("j{token}"), run_id: "r1".into(), incarnation: "i1".into(),
+                fencing_token: token, issued_at: now_unix(), expires_at: now_unix() + 120,
+                submission_digest: sha256_hex(bytes), task_id: TASK_ID.into(),
+                input_version: INPUT_VERSION.into(), scorer_version: SCORER_VERSION.into(),
+            };
+            encode_dispatch(&Signed::sign(&self.key, "controller", &job), bytes).unwrap()
+        }
+
+        async fn request(&self, frame: Vec<u8>, peer: [u8; 4]) -> (StatusCode, Vec<u8>) {
+            let request = Request::builder().method("POST").uri("/dispatch")
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .body(Body::from(frame)).unwrap();
+            let response = dispatch(State(self.intake.clone()), ConnectInfo(SocketAddr::from((peer, 30000))), request).await;
+            let status = response.status();
+            assert_eq!(response.headers()[header::CONNECTION], "close");
+            (status, to_bytes(response.into_body(), 100).await.unwrap().to_vec())
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.root); }
+    }
+
+    #[tokio::test]
+    async fn dispatch_ack_is_identical_for_invalid_valid_duplicate_busy_and_stopped() {
+        let mut fixture = Fixture::new();
+        let expected = (StatusCode::ACCEPTED, FIXED_DISPATCH_ACK.as_bytes().to_vec());
+        assert_eq!(fixture.request(b"not a signed dispatch".to_vec(), [10, 20, 0, 1]).await, expected);
+        let frame = fixture.frame(1, b"candidate");
+        assert_eq!(fixture.request(frame.clone(), [10, 20, 0, 2]).await, expected);
+        assert!(fixture.receiver.try_recv().is_err());
+        assert_eq!(fixture.request(frame.clone(), [10, 20, 0, 1]).await, expected);
+        // Durable terminal claim is already on disk at acknowledgement, before any worker runs.
+        let state: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture.root.join("ledger.json")).unwrap()).unwrap();
+        assert_eq!(state["high_water"], 1);
+        assert_eq!(state["claims"]["j1"]["status"], "execution_claimed");
+        assert_eq!(fixture.request(frame, [10, 20, 0, 1]).await, expected);
+        assert_eq!(fixture.request(fixture.frame(2, b"different"), [10, 20, 0, 1]).await, expected);
+        assert_eq!(fixture.request(vec![0; MAX_DISPATCH_BYTES + 1], [10, 20, 0, 1]).await, expected);
+        fixture.intake.stopping.store(true, Ordering::SeqCst);
+        assert_eq!(fixture.request(fixture.frame(3, b"another"), [10, 20, 0, 1]).await, expected);
+        assert!(fixture.receiver.try_recv().is_ok());
+        assert!(fixture.receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_dispatches_admit_exactly_one_job() {
+        let mut fixture = Fixture::new();
+        let one = fixture.frame(1, b"candidate A");
+        let two = fixture.frame(2, b"candidate B");
+        let (a, b) = tokio::join!(fixture.request(one, [10, 20, 0, 1]), fixture.request(two, [10, 20, 0, 1]));
+        assert_eq!(a, b);
+        assert!(fixture.receiver.try_recv().is_ok());
+        assert!(fixture.receiver.try_recv().is_err());
+        let state: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture.root.join("ledger.json")).unwrap()).unwrap();
+        assert_eq!(state["claims"].as_object().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn valid_controller_signature_cannot_authorize_mismatched_submission_bytes() {
+        let mut fixture = Fixture::new();
+        let mut frame = fixture.frame(1, b"candidate A");
+        *frame.last_mut().unwrap() = b'B';
+        fixture.request(frame, [10, 20, 0, 1]).await;
+        assert!(fixture.receiver.try_recv().is_err());
+        assert_eq!(fixture.intake.store.lock().unwrap().high_water(), 0);
+    }
+}

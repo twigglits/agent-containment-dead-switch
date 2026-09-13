@@ -44,7 +44,7 @@ const GRADER_DISPATCH_URL: &str = "http://10.20.0.4:7200/dispatch";
 pub(crate) struct GradingArgs {
     #[arg(long, env = "DS_GRADING_ENABLE", default_value_t = false)]
     pub grading_enable: bool,
-    /// One-time creation only. Existing or partially lost state is never reinitialized.
+    /// Create state once and exit without serving. Lost/partial state is never reinitialized.
     #[arg(long, default_value_t = false)]
     pub grading_init: bool,
     /// Immutable lifetime budget, supplied only on --grading-init. No campaign/key reset.

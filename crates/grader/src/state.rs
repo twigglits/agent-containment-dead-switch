@@ -93,11 +93,9 @@ impl Store {
     pub fn initialize(root: &Path, binding: Binding) -> anyhow::Result<()> {
         validate_binding(&binding)?;
         std::fs::DirBuilder::new().mode(0o700).create(root)?;
-        for name in ["jobs"] {
-            std::fs::DirBuilder::new()
-                .mode(0o700)
-                .create(root.join(name))?;
-        }
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(root.join("jobs"))?;
         write_new(&root.join("lock"), b"", 0o600)?;
         let ledger = Ledger {
             v: 1,
