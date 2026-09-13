@@ -4,7 +4,7 @@
 
 **Author:** J. Naude (`jnaude60512@gmail.com`)
 **Project:** `agent-containment-dead-switch`
-**Draft:** 2026-09-13 · AI Safety hackathon submission
+**Draft:** 2026-09-13 · ApartResearch AI Incident Response Sprint
 
 ---
 
