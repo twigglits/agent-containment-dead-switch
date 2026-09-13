@@ -81,6 +81,7 @@ fn read_env(p: &Path) -> anyhow::Result<HashMap<String, String>> {
 }
 
 /// VM2's own egress: only hostd. Untrusted second layer under the Mac-side gate.
+#[allow(dead_code)] // disabled for the MVP; see the note before set_phase("eval") in main()
 fn vm2_self_restrict(hostd_ip: &str, hostd_port: &str) {
     let rules = format!(
         "table inet vm2self {{ }}\ndelete table inet vm2self\ntable inet vm2self {{\n chain output {{\n  type filter hook output priority 0; policy drop;\n  oifname \"lo\" accept\n  oifname \"tap0\" accept\n  ip daddr {hostd_ip} tcp dport {hostd_port} accept\n  ct state established,related accept\n  counter drop\n }}\n}}\n"
@@ -189,7 +190,7 @@ async fn main() -> anyhow::Result<()> {
         let rs = rs.clone();
         move |v: VmiResult| rs.lock().unwrap().2 = v
     };
-    let mut vm1_state = Vm1State::NotStarted;
+    let mut vm1_state;
     let mut vmi_result = VmiResult::Unmeasured;
 
     // ---- wait for the prestage lease (epoch 0)

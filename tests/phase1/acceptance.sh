@@ -38,7 +38,7 @@ CONTAIN_BOUND_S=30   # §2 declared bound (25s) + margin for the suite's 1s poll
 wait_eval(){ # wait until the run reaches eval (hostd logs a sealed-gate evidence entry), max ~300s
   local run=$1                       # prestage (uv sync + CPython fetch) can take a few minutes
   local E=/var/lib/deadswitch/evidence/$run.jsonl
-  for i in $(seq 1 150); do
+  for _ in $(seq 1 150); do
     printf '%s\n' "$SUDO" | sudo -S -p '' grep -aq '"state":"sealed"\|vm1_booted' "$E" 2>/dev/null && return 0
     pgrep -f "deadswitch-hostd run --run-id $run" >/dev/null || return 1
     sleep 2
@@ -68,7 +68,7 @@ if wait_eval "$R"; then
   # Drop does not run under SIGKILL, so the guard (not this process) must destroy VM2.
   echo "reached eval; SIGKILL the hostd run process"; SUDOP pkill -9 -f "deadswitch-hostd run --run-id $R" 2>/dev/null
   t0=$(date +%s)
-  for i in $(seq 1 60); do inst_gone "$R" && break; sleep 1; done
+  for _ in $(seq 1 60); do inst_gone "$R" && break; sleep 1; done
   t1=$(date +%s)
   # Confirm a REAL teardown: instance observed gone, disk dir removed, captured VMM pid dead, AND
   # within the declared containment bound (Codex end-of-P1 #6 — A2 must assert timing too).
@@ -94,7 +94,7 @@ if wait_eval "$R"; then
   vz=$(vz_pid_of "$R"); echo "captured VMM pid=$vz"
   t0=$(date +%s)
   curl -s -X POST $CTL/runs/$R/revoke -H "authorization: Bearer $OP" -H 'content-type: application/json' -d '{"reason":"acceptance A3"}' >/dev/null
-  for i in $(seq 1 60); do inst_gone "$R" && break; sleep 1; done
+  for _ in $(seq 1 60); do inst_gone "$R" && break; sleep 1; done
   t1=$(date +%s); dt=$((t1-t0))
   st=$(state "$R")
   # VM1 cannot outlive VM2: instance observed gone, disk dir deleted, captured VMM pid dead, run

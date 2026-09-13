@@ -10,11 +10,8 @@ use tokio::sync::mpsc;
 
 #[derive(Deserialize, Debug)]
 pub struct LeaseView {
-    pub run_id: String,
-    pub epoch: u64,
     pub gate: GateState,
     pub lease: Option<Signed>,
-    pub controller_pubkey: String,
 }
 
 pub struct Hostd {
@@ -117,17 +114,6 @@ impl Hostd {
                 Ok(Some((l, v.gate)))
             }
         }
-    }
-
-    pub async fn report(&self, r: &Vm2Report) -> anyhow::Result<()> {
-        self.http
-            .post(format!("{}/v1/report", self.base))
-            .bearer_auth(&self.token)
-            .json(r)
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(())
     }
 
     pub async fn defender(&self, a: &DefenderAction) -> anyhow::Result<()> {

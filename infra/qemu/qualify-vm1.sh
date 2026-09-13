@@ -32,7 +32,7 @@ sudo qemu-system-aarch64 -machine virt,gic-version=3,accel=$accel -cpu $cpu -smp
   -qmp unix:"$S/qmp.sock",server=on,wait=off >/dev/null 2>&1 &
 # track the EXACT qemu child pid (not a wrapper); sudo re-execs, so resolve the real qemu pid.
 sleep 1; QP=$(pgrep -f "qemu-system-aarch64.*overlay.qcow2" | tail -1); [ -n "$QP" ] || { echo "FAIL: qemu did not start"; exit 1; }
-for i in $(seq 1 1800); do grep -q 'VM1_READY' "$S/serial.log" 2>/dev/null && break; kill -0 $QP 2>/dev/null || { echo "QEMU EXITED"; tail -20 "$S/serial.log"; exit 1; }; sleep 0.1; done
+for _ in $(seq 1 1800); do grep -q 'VM1_READY' "$S/serial.log" 2>/dev/null && break; kill -0 $QP 2>/dev/null || { echo "QEMU EXITED"; tail -20 "$S/serial.log"; exit 1; }; sleep 0.1; done
 grep -q 'VM1_READY' "$S/serial.log" || { echo "BOOT TIMEOUT"; tail -20 "$S/serial.log"; sudo kill -9 $QP; exit 1; }
 echo "BOOT OK: $(grep -m1 KMEM "$S/serial.log")"
 # The mandatory deps image (attached as /dev/vdb) must have been mounted and its config parsed.
