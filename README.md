@@ -61,4 +61,4 @@ bash tests/phase3/offline.sh
 ```
 
 CI (`.github/workflows/ci.yml`) runs rustfmt, clippy, build/test, ruff, shellcheck and terraform validate; `security.yml` gates on Trivy.
-Tooling per [`AGENTS.md`](AGENTS.md): Rust/crates.io, `uv`, Terraform/OpenTofu.
+Tooling: Rust/crates.io, `uv`, Terraform/OpenTofu.
