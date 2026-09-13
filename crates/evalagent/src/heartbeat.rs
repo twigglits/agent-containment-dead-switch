@@ -14,6 +14,7 @@ pub const MAX_EVIDENCE_AGE: Duration =
     Duration::from_secs(CHALLENGE_TTL_S * (MISSED_CHALLENGES_TO_TRIP as u64 - 1));
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const NONCE_MARGIN: Duration = Duration::from_secs(1);
+const OUTSTANDING_BACKOFF: Duration = Duration::from_secs(CHALLENGE_TTL_S / 2);
 
 pub fn validate_interval(seconds: u64) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -58,6 +59,15 @@ fn order_reason(signed: &Signed, pk: &VerifyingKey, a: &RunArgs) -> anyhow::Resu
         "controller heartbeat order {:?}: {}",
         order.order, order.reason
     ))
+}
+
+fn rejected_order(signed: &Signed, pk: &VerifyingKey, a: &RunArgs) -> Outcome {
+    // Like LeaseResponse::Denied, a denial can only reduce authority, even if its order fails
+    // verification. Unusable challenge/lease GRANTS, by contrast, cannot establish new authority.
+    Outcome::Rejected(
+        order_reason(signed, pk, a)
+            .unwrap_or_else(|e| format!("controller denied heartbeat; order did not verify: {e}")),
+    )
 }
 
 fn challenge_request(a: &RunArgs, issued_at: u64) -> ChallengeRequest {
@@ -176,8 +186,9 @@ impl Heartbeat {
 
     fn defer_outstanding(&mut self, now: Instant) {
         // We may have lost the challenge response and therefore not know its nonce. The controller
-        // does not return that nonce on 429. Allow its full TTL to elapse; do not churn requests.
-        self.retry_challenge_at = Some(now + Duration::from_secs(CHALLENGE_TTL_S));
+        // does not return that nonce on 429. Poll at most twice per TTL, still only on lease ticks;
+        // waiting a full TTL AFTER a 429 could waste the next recovery tick before our local stop.
+        self.retry_challenge_at = Some(now + OUTSTANDING_BACKOFF);
     }
 
     fn discard_expiring(&mut self, now: Instant) -> bool {
@@ -234,7 +245,7 @@ impl Heartbeat {
             let signed = match reply {
                 Reply::Message(s) => s,
                 Reply::Order(s) | Reply::Denied { order: s } => {
-                    return Ok(Outcome::Rejected(order_reason(&s, pk, a)?))
+                    return Ok(rejected_order(&s, pk, a))
                 }
             };
             if let Ok(reason) = order_reason(&signed, pk, a) {
@@ -297,9 +308,7 @@ impl Heartbeat {
             .context("evidence response")?
         {
             Reply::Message(reply) => Ok(verdict(reply, sent_at)),
-            Reply::Order(s) | Reply::Denied { order: s } => {
-                Ok(Outcome::Rejected(order_reason(&s, pk, a)?))
-            }
+            Reply::Order(s) | Reply::Denied { order: s } => Ok(rejected_order(&s, pk, a)),
         }
     }
 }

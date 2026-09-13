@@ -119,8 +119,8 @@ the controller key, audience, run, incarnation, epoch and freshness, then sends 
 `HostEvidence` to `/evidence` with that nonce. Evidence includes the enrolled digests, current gate
 (CUT before sealing), current lease token/time remaining, and proxy counters. Each heartbeat HTTP
 request has a 2-second timeout. A nonce is never resent after an evidence POST attempt; a lost
-reply could mean it was already consumed. HTTP 429 waits a full challenge TTL before another
-challenge request, with attempts still driven by lease ticks.
+reply could mean it was already consumed. HTTP 429 backs off for half a challenge TTL (5 seconds),
+with attempts still driven by lease ticks and no rapid polling of a live nonce.
 
 The controller trips after `CHALLENGE_TTL_S * MISSED_CHALLENGES_TO_TRIP` = 30 seconds without valid
 evidence. A separate local evidence deadline expires after 20 seconds, measured from startup or

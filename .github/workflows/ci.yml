@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: rust (fmt / clippy / test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: build
+        run: cargo build --workspace --locked
+      - name: test
+        run: cargo test --workspace --locked
+
+  python:
+    name: python harness (ruff / tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: ruff lint
+        run: |
+          pipx install ruff || pip install ruff
+          ruff check harness
+      - name: harness regression tests (stdlib-only classifier + runtime guards)
+        working-directory: harness
+        run: |
+          python -m deadswitch_harness.test_classify
+          python -m deadswitch_harness.test_runtime
+
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: shellcheck infra + test scripts
+        run: |
+          mapfile -t scripts < <(find infra tests -name '*.sh' -type f)
+          printf 'checking %d scripts\n' "${#scripts[@]}"
+          shellcheck --severity=warning --external-sources "${scripts[@]}"
+
+  terraform:
+    name: terraform fmt / validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: fmt
+        run: terraform -chdir=infra/terraform/phase2 fmt -check -recursive
+      - name: validate
+        run: |
+          terraform -chdir=infra/terraform/phase2 init -backend=false -input=false
+          terraform -chdir=infra/terraform/phase2 validate

@@ -200,8 +200,8 @@ fn outstanding_challenges_wait_and_expiring_nonces_are_not_sent() {
     let now = Instant::now();
     let mut hb = Heartbeat::default();
     hb.defer_outstanding(now);
-    assert!(hb.awaiting_challenge(now + Duration::from_secs(5)));
-    assert!(!hb.awaiting_challenge(now + Duration::from_secs(CHALLENGE_TTL_S)));
+    assert!(hb.awaiting_challenge(now + OUTSTANDING_BACKOFF - Duration::from_millis(1)));
+    assert!(!hb.awaiting_challenge(now + OUTSTANDING_BACKOFF));
     hb.pending = Some(PendingChallenge {
         challenge: challenge(),
         expires_at: now + Duration::from_secs(CHALLENGE_TTL_S),
@@ -267,6 +267,14 @@ fn signed_destroy_orders_are_recognized_on_both_heartbeat_endpoints() {
         &args()
     )
     .is_err());
+    assert!(matches!(
+        rejected_order(
+            &signed,
+            &SigningKey::from_bytes(&[3; 32]).verifying_key(),
+            &args()
+        ),
+        Outcome::Rejected(_)
+    ));
     assert!(matches!(
         serde_json::from_value::<Reply<EvidenceResponse>>(serde_json::to_value(&signed).unwrap())
             .unwrap(),
