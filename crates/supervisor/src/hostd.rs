@@ -53,7 +53,19 @@ impl Hostd {
     }
 
     pub async fn lease(&self) -> anyhow::Result<LeaseView> {
-        Ok(self.http.get(format!("{}/v1/lease", self.base)).bearer_auth(&self.token).send().await?.error_for_status()?.json().await?)
+        // Fetch the lease with a BLOCKING reqwest call on a spawn_blocking thread, NOT async reqwest
+        // on the shared runtime: async reqwest here was intermittently starved/stalled under the
+        // supervisor's tokio runtime (the same failure that moved the report path to a dedicated
+        // thread), which left the eval-lease-wait loop hung so VM1 never booted. A dedicated blocking
+        // thread cannot be starved by the async flow.
+        let url = format!("{}/v1/lease", self.base);
+        let token = self.token.clone();
+        let v = tokio::task::spawn_blocking(move || -> anyhow::Result<LeaseView> {
+            let c = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(5)).build()?;
+            Ok(c.get(&url).bearer_auth(&token).send()?.error_for_status()?.json()?)
+        })
+        .await??;
+        Ok(v)
     }
 
     /// Verified rung-1 lease: signature by the controller key, right run, replay-filtered by the

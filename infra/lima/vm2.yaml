@@ -1,0 +1,56 @@
+# VM2 — supervisory VM (Lima, Apple Virtualization.framework).
+# Nested virtualization ON so Firecracker (VM1) can use /dev/kvm inside VM2.
+# No port forwards, no host mounts writable: VM2 is assumed compromisable.
+vmType: vz
+nestedVirtualization: true
+arch: aarch64
+cpus: 4
+memory: 8GiB
+disk: 30GiB
+images:
+  - location: https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img
+    arch: aarch64
+# No host mounts at all: binaries, scripts and images are copied in at base provisioning (limactl copy).
+mounts: []
+ssh:
+  # fixed so the Mac-side pf gate can admit exactly this loopback port for the Lima service user
+  localPort: 60022
+portForwards:
+  - guestPortRange: [1, 65535]
+    ignore: true
+containerd:
+  system: false
+  user: false
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        curl jq nftables iproute2 e2fsprogs uidmap python3 ca-certificates
+      # Firecracker release binary (aarch64)
+      FC_VER=v1.13.1
+      if [ ! -x /usr/local/bin/firecracker ]; then
+        curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VER}/firecracker-${FC_VER}-aarch64.tgz" -o /tmp/fc.tgz
+        tar -xzf /tmp/fc.tgz -C /tmp
+        install -m 0755 /tmp/release-${FC_VER}-aarch64/firecracker-${FC_VER}-aarch64 /usr/local/bin/firecracker
+        install -m 0755 /tmp/release-${FC_VER}-aarch64/jailer-${FC_VER}-aarch64 /usr/local/bin/jailer
+      fi
+      # Rust toolchain for building the supervisor in-guest
+      command -v uv || curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+      # squashfs-tools for the VM1 rootfs build, conntrack for flow cutoff on expiry
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends squashfs-tools conntrack
+      # VM2 must emit no traffic of its own once sealed: any packet leaving VM2 that is not to hostd
+      # is counted as a bypass attempt by the Mac-side gate and trips the run.
+      systemctl mask --now systemd-timesyncd.service apt-daily.timer apt-daily-upgrade.timer motd-news.timer fwupd-refresh.timer 2>/dev/null || true
+      systemctl disable --now unattended-upgrades 2>/dev/null || true
+      mkdir -p /etc/deadswitch /var/lib/deadswitch && chmod 700 /etc/deadswitch
+      id prestage >/dev/null 2>&1 || useradd -r -m -d /var/lib/deadswitch/prestage -s /usr/sbin/nologin prestage
+probes:
+  - description: "kvm available (nested virt)"
+    script: |
+      #!/bin/bash
+      set -eux
+      timeout 60s bash -c 'until [ -e /dev/kvm ]; do sleep 2; done'
+    hint: "Nested virtualization not exposed; Firecracker (VM1) cannot run inside VM2. Use the Linux/KVM profile (Phase 2 Hetzner) - a sibling VM1 is NOT a conforming fallback."

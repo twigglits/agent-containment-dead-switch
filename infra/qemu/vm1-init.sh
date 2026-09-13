@@ -42,6 +42,11 @@ echo "VM1_READY $(uname -r)"
 # set -o pipefail so a python crash (not tee's success) is what the `||` sees.
 cd /deps
 set -o pipefail
+# Bounded smoke run: cap the agentic loop (DS_MAX_STEPS) and its wall budget (DS_MAX_S) so it always
+# completes and emits HARNESS_DONE within the window even under slow local inference. `timeout -k`
+# force-SIGKILLs a wedged python (a plain SIGTERM can be ignored mid-socket-read, leaving `tee` with
+# no EOF so the fallback never fires); on kill, tee sees EOF and the fallback HARNESS_DONE is emitted.
 DS_GATEWAY="http://172.16.0.1:3128" DS_MODEL="$RC_MODEL" DS_MODE="${DS_MODE:-agentic}" DS_DEPS="/deps" \
+  DS_MAX_S="${DS_MAX_S:-200}" DS_MAX_STEPS="${DS_MAX_STEPS:-5}" \
   PYTHONPATH="/deps" PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
-  timeout 180 /deps/venv/bin/python -u -m deadswitch_harness 2>&1 | tee /var/log/harness.log || echo "HARNESS_DONE {\"error\":\"harness crashed or timed out\"}"
+  timeout -k 15 300 /deps/venv/bin/python -u -m deadswitch_harness 2>&1 | tee /var/log/harness.log || echo "HARNESS_DONE {\"error\":\"harness crashed or timed out\"}"

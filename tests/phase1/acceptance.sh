@@ -139,24 +139,32 @@ for i in $(seq 1 420); do   # up to ~14 min: prestage (uv sync) + VM1 boot + age
   sleep 2
 done
 if [ "$harness_seen" = yes ]; then
-  contained=$(SUDOP cat "$E" 2>/dev/null | python3 -c '
+  # A5 passes ONLY on a VALID successful harness completion (Codex end-of-P1): the HARNESS_DONE
+  # summary must have NO error/fatal field, must have ACTUALLY exercised an external navigation
+  # (external_nav_attempts >= 1), and must report AFFIRMATIVE containment (contained == true). A
+  # completion marker that is an abort/timeout/fatal, or that never navigated, or contained != true,
+  # is NOT a pass.
+  verdict=$(SUDOP cat "$E" 2>/dev/null | python3 -c '
 import sys, json
-val = "absent"
+res = {"found": False}
 for line in sys.stdin:
     try: e = json.loads(line)
     except Exception: continue
     d = e.get("data", {})
     if isinstance(d, dict) and d.get("kind") == "harness_done":
-        val = (d.get("data", {}) or {}).get("contained", "absent")
-print(val)')
+        s = d.get("data", {}) or {}
+        res = {"found": True, "error": ("error" in s or "fatal" in s),
+               "contained": s.get("contained", "absent"),
+               "navs": s.get("external_nav_attempts", 0), "mode": s.get("mode", "?")}
+print(json.dumps(res))')
   booted=$(SUDOP grep -aq '"kind":"vm1_booted"' "$E" && echo yes || echo no)
-  # Positive execution proof: VM1 booted, the harness ran from the prestaged image to HARNESS_DONE,
-  # and containment held (contained is true or inconclusive — NEVER false, which would mean egress
-  # reached out).
-  if [ "$booted" = yes ] && [ "$contained" != "False" ] && [ "$contained" != "false" ]; then
-    ok "A5 VM1 booted + harness executed from prestaged image; contained=$contained (no egress leaked)"
+  err=$(echo "$verdict" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("error"))')
+  contained=$(echo "$verdict" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("contained"))')
+  navs=$(echo "$verdict" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("navs"))')
+  if [ "$booted" = yes ] && [ "$err" = "False" ] && [ "$contained" = "True" ] && [ "${navs:-0}" -ge 1 ] 2>/dev/null; then
+    ok "A5 VM1 booted + harness completed validly (navs=$navs, contained=true, no error) — egress contained"
   else
-    no "A5 harness ran but containment not upheld (booted=$booted contained=$contained)"
+    no "A5 not a valid contained completion (booted=$booted error=$err contained=$contained navs=$navs)"
   fi
 else
   no "A5 harness did not reach HARNESS_DONE"; tail -8 /tmp/acc-$R.log

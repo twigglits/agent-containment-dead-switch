@@ -7,7 +7,14 @@ set -euxo pipefail
 OUT=/var/lib/deadswitch/vm1; P=/tmp/payload
 mkdir -p "$OUT"; cd "$OUT"
 IMG_URL="https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img"
-[ -f base-cloud.img ] || { curl -fsSL "$IMG_URL" -o base-cloud.img; echo "$IMG_URL" > vm1.qcow2.source; }
+# Prefer a base cloud image STAGED in the payload (copied into VM2 locally) so provisioning does not
+# re-download ~348MB over the guest's usernet every time — that download stalled for >1h once. Fall
+# back to a bounded, resuming download only if no staged image is present.
+if [ -f /tmp/payload/base-cloud.img ]; then
+  cp /tmp/payload/base-cloud.img base-cloud.img; echo "using staged base-cloud.img from payload ($(du -h base-cloud.img | cut -f1))"
+elif [ ! -f base-cloud.img ]; then
+  curl -fsSL --retry 5 --retry-delay 3 -C - --max-time 1800 "$IMG_URL" -o base-cloud.img; echo "$IMG_URL" > vm1.qcow2.source
+fi
 rm -f vm1.qcow2
 qemu-img convert -O qcow2 base-cloud.img vm1.qcow2
 qemu-img resize vm1.qcow2 12G
