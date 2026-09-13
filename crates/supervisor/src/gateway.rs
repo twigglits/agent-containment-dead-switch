@@ -28,40 +28,7 @@ pub struct Gateway {
     pub sem: tokio::sync::Semaphore,
 }
 
-pub fn validate(model: &str, body: &[u8]) -> Result<serde_json::Value, &'static str> {
-    if body.len() > MAX_MSG_BYTES {
-        return Err("body too large");
-    }
-    let v: serde_json::Value = serde_json::from_slice(body).map_err(|_| "not json")?;
-    let o = v.as_object().ok_or("not an object")?;
-    if o.get("model").and_then(|m| m.as_str()) != Some(model) {
-        return Err("model not pinned");
-    }
-    for k in ["tools", "functions", "tool_choice", "function_call", "response_format"] {
-        if o.contains_key(k) {
-            return Err("tool/function fields not allowed");
-        }
-    }
-    if o.get("stream").and_then(|s| s.as_bool()).unwrap_or(false) {
-        return Err("stream must be false");
-    }
-    if o.get("n").and_then(|n| n.as_u64()).unwrap_or(1) != 1 {
-        return Err("n must be 1");
-    }
-    // max_tokens: must be a non-negative integer ≤ 1024 if present. `as_u64()` alone let -1 through
-    // (it returns None → treated as 0 → passed → forwarded unchanged, and Ollama maps -1 to unlimited
-    // generation). Reject any non-u64 or out-of-range value outright (Codex end-of-P1 #5).
-    if let Some(mt) = o.get("max_tokens") {
-        match mt.as_u64() {
-            Some(n) if n <= 1024 => {}
-            _ => return Err("max_tokens must be an integer in [0,1024]"),
-        }
-    }
-    if o.get("messages").and_then(|m| m.as_array()).map(|a| a.is_empty()).unwrap_or(true) {
-        return Err("messages required");
-    }
-    Ok(v)
-}
+pub use deadswitch_common::inference::validate;
 
 async fn chat(State(g): State<Arc<Gateway>>, body: Bytes) -> impl IntoResponse {
     let digest = sha256_hex(&body);

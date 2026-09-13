@@ -3,6 +3,11 @@
 .DS_Store
 .omc/
 .claude/
+# agent/runtime scratch (claude-flow / ruflo / python caches) — never commit
+.claude-flow/
+.swarm/
+ruvector.db
+**/__pycache__/
 # terraform provider cache
 **/.terraform/
 *.tfstate*

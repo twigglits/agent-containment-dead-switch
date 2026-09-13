@@ -8,6 +8,8 @@
 //! A lease is *permission to continue*, never proof of integrity. Evidence is only what the
 //! signer observed itself. Enforcement is fail-closed on both a monotonic and a wall clock.
 
+pub mod inference;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};

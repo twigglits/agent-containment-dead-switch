@@ -580,56 +580,12 @@ async fn chat(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body::Bytes
         app.evidence_append("chokepoint_denied", serde_json::json!({"why": why}));
         Err((StatusCode::FORBIDDEN, why.to_string()))
     };
-    if body.len() > MAX_MSG_BYTES {
-        return deny(&app, "body too large");
-    }
-    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) else { return deny(&app, "not json") };
-    let Some(obj) = v.as_object() else { return deny(&app, "not an object") };
-    if obj.get("model").and_then(|m| m.as_str()) != Some(app.model.as_str()) {
-        return deny(&app, "model not pinned");
-    }
-    for k in ["tools", "functions", "tool_choice", "function_call", "response_format"] {
-        if obj.contains_key(k) {
-            return deny(&app, "tool/function fields not allowed");
-        }
-    }
-    if obj.get("n").and_then(|n| n.as_u64()).unwrap_or(1) != 1 {
-        return deny(&app, "n must be 1");
-    }
-    // max_tokens must be a non-negative integer ≤ 1024 (reject -1 etc.; see gateway note).
-    let max_tokens = match obj.get("max_tokens") {
-        None => 512u64,
-        Some(mt) => match mt.as_u64() {
-            Some(n) if n <= 1024 => n,
-            _ => return deny(&app, "max_tokens must be an integer in [0,1024]"),
-        },
+    // Shared with the gateway and Linux proxy: validate the exact action and construct fresh
+    // allowlisted native /api/chat JSON, including the Phase-1 context/generation cap fix.
+    let backend = match inference::backend_request(&app.model, &body) {
+        Ok(backend) => backend,
+        Err(why) => return deny(&app, why),
     };
-    // Rebuild `messages` from scratch as strictly {role, content:String}; a message carrying any
-    // other field is rejected, not forwarded.
-    let Some(in_msgs) = obj.get("messages").and_then(|m| m.as_array()).filter(|a| !a.is_empty()) else {
-        return deny(&app, "messages required");
-    };
-    let mut messages = Vec::with_capacity(in_msgs.len());
-    for m in in_msgs {
-        match (m.get("role").and_then(|r| r.as_str()), m.get("content").and_then(|c| c.as_str())) {
-            (Some(role), Some(content)) if matches!(role, "system" | "user" | "assistant" | "tool") => {
-                messages.push(serde_json::json!({"role": role, "content": content}));
-            }
-            _ => return deny(&app, "each message must be {role, content:string} with a known role"),
-        }
-    }
-    // Construct a FRESH backend request containing only allowed fields. We do NOT forward the
-    // client's JSON: Ollama's Go decoder case-folds field names (e.g. `max_tokenſ` → `max_tokens`),
-    // so any preserved extra field could re-set the generation cap — a real bypass (Codex end-of-P1
-    // #5, backend field-name interpretation). Sending to the native `/api/chat` API is where
-    // `options.num_ctx`/`num_predict` are actually honored; the OpenAI-compat `/v1` endpoint ignores
-    // `options`, so the advertised context cap was ineffective there.
-    let backend = serde_json::json!({
-        "model": app.model,
-        "messages": messages,
-        "stream": false,
-        "options": {"num_ctx": 4096, "num_predict": max_tokens},
-    });
     let active = |app: &App| {
         let l = app.live.lock().unwrap();
         !(l.deadline.as_ref().map(|d| d.expired(now_unix())).unwrap_or(true) || l.destroy_reason.is_some() || l.deadline.as_ref().map(|d| d.epoch).unwrap_or(0) < 1)
@@ -676,15 +632,7 @@ async fn chat(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body::Bytes
     if !active(&app) || *cancel.borrow() {
         return deny(&app, "run terminated during inference; response withheld");
     }
-    // Map Ollama /api/chat → OpenAI chat.completion shape (the harness reads choices[0].message.content).
-    let content = native.pointer("/message/content").and_then(|c| c.as_str()).unwrap_or("");
-    let mapped = serde_json::json!({
-        "id": format!("chatcmpl-{}", &sha256_hex(&body)[..24]),
-        "object": "chat.completion",
-        "model": app.model,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": native.get("done_reason").and_then(|d| d.as_str()).unwrap_or("stop")}],
-        "usage": {"prompt_tokens": native.get("prompt_eval_count").and_then(|n| n.as_u64()).unwrap_or(0), "completion_tokens": native.get("eval_count").and_then(|n| n.as_u64()).unwrap_or(0)}
-    });
+    let mapped = inference::map_response(&app.model, &body, &native);
     Ok((st, Json(mapped)))
 }
 
@@ -1228,7 +1176,11 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
         controller_pk,
         model,
         ollama,
-        http: reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(5)).build()?,
+        // One fresh TCP connection per operation: a pooled socket must never remain stranded
+        // across a gate transition. HTTP/1 prevents multiplexed reuse; never retry a dispatch.
+        http: reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none())
+            .pool_max_idle_per_host(0).http1_only().retry(reqwest::retry::never())
+            .timeout(Duration::from_secs(5)).build()?,
         record_path: record_path.clone(),
         evidence: evidence::EvidenceStore::new(Path::new(STATE_DIR).join("evidence").join(format!("{run_id}.jsonl")), EVIDENCE_QUOTA_BYTES),
         live: Mutex::new(Live { deadline: None, last_lease_at: None, lease_signed: None, gate: GateState::Sealed, last_report: None, report_seq: 0, prestage_done: false, log_seq_expected: 0, log_tokens: LOG_RATE_PER_S as f64, log_last: Instant::now(), log_dropped: 0, chokepoint: ChokepointObs::default(), destroy_reason: None }),
