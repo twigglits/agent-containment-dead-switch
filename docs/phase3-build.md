@@ -165,3 +165,28 @@ approval is implied by a green local suite.
 Existing Phase 1/2 firewall rules and the original `ds_kill.py` actuator remain unchanged. The
 evalagent stop notification adds no execution authority. No deployment or Git write is part of
 the local build workflow.
+
+## Verified locally on 2026-09-13
+
+| Check | Result |
+| --- | --- |
+| `cargo build --workspace --locked` | PASS, no native build warnings |
+| `cargo test --workspace --locked` | PASS: 119 tests, zero failed/ignored |
+| Phase 2 + Phase 3 + harness Python unit tests | PASS: 65 tests; classifier regression controls also pass |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| Grader shellcheck, infrastructure/test `bash -n`, Python syntax | PASS |
+| Required grader + controller `cargo zigbuild --release --target x86_64-unknown-linux-musl ... --locked` | PASS; both artifacts verified as statically linked x86-64 ELF executables |
+| Updated evalagent x86_64 musl release cross-build | PASS; statically linked x86-64 ELF |
+| Live G1–G5 skeleton | BLOCKED, exit 77; zero live assertions claimed |
+
+Local validation logs are in `target/phase3-validation/`. Cross-built executables are in
+`target/x86_64-unknown-linux-musl/release/`. Zig 0.16 emits a nonfatal warning that linker
+optimization setting `1` is deprecated and ignored; there are no source Clippy warnings.
+
+Deployment still needs the reviewed immutable guest image, Linux/systemd/cgroup-v2/QEMU/nft
+qualification, private signer/fixture provisioning, exact WireGuard/firewall setup, a reviewed
+upload adapter, updated evalagent, and off-host actuator credentials/wiring. The toy fixture is
+public and is not a real held-out corpus. Full trusted-state snapshot rollback and universal timing
+non-interference are not solved by this MVP. These limits do not substitute for the live G1–G5
+positive controls, captures, fault injection and independently confirmed teardown required by the plan.
