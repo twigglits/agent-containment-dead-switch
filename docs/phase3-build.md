@@ -117,6 +117,11 @@ specifies QEMU provisioning, fixture injection, scorer-private files, nft rules,
 and the independent grader-node deletion actuator. Hook paths and fixed input/image configuration
 are operator-installed. Submissions cannot choose host paths, hooks, network addresses, or arguments.
 
+Deploy the updated Phase 2 evalagent on the eval host as well: its shutdown now sends the existing
+signed `/terminated` message only after successful destruction and a separate bounded observation
+of process absence. The notification does not grant or extend execution. Without that trusted stop
+confirmation, the controller deliberately refuses grading authorization.
+
 The grader's only WireGuard peer is the controller with `AllowedIPs = 10.20.0.1/32`; the controller
 adds the grader peer with `AllowedIPs = 10.20.0.4/32`. Other peers must not list the grader. Grader
 forwarding is dropped. The controller guard denies grader access to `:7100`, `:7101`, and the
@@ -151,7 +156,7 @@ approval is implied by a green local suite.
 | `crates/common/src/lib.rs`, `grading.rs`, `grading/tests.rs` | Signed grading schemas, fixed vocabulary, framing, digest binding and grading deadlines |
 | `crates/controller/Cargo.toml`, `src/main.rs`, `src/grading.rs`, `src/grading/tests.rs` | Broker, durable authorization/budget/results, separate routers and regression tests |
 | `crates/grader/Cargo.toml`, `src/{lib,main,state,hooks,tests}.rs` | Grader service, scorer, fail-closed lifecycle, private durable state, bounded hooks and tests |
-| `crates/evalagent` termination integration | Preserve shutdown enforcement and add signed stop notification only after independently confirmed destruction |
+| `crates/evalagent/Cargo.toml`, `src/main.rs`, `src/lifecycle_tests.rs`, `src/termination.rs` | Preserve shutdown enforcement and add signed stop notification only after independently confirmed destruction |
 | `infra/hetzner/grader/` | Exact nft guards, QEMU hooks/launcher, fixture, systemd/config examples and deployment instructions |
 | `infra/hetzner/ds-grader-kill.py` | Separate off-host grader deletion with durable fencing, positive confirmation and quarantine |
 | `tests/phase3/` | Local Rust/Python/shell runner, actuator/hook/airlock tests and explicit BLOCKED live skeleton |

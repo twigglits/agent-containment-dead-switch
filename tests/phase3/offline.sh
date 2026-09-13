@@ -9,6 +9,11 @@ cargo build --workspace --locked
 cargo test --workspace --locked
 python3 -B -m unittest discover -s tests/phase2 -p 'test_*.py' -v
 python3 -B -m unittest discover -s tests/phase3 -p 'test_*.py' -v
+(
+  cd harness
+  python3 -B -m deadswitch_harness.test_classify
+  python3 -B -m deadswitch_harness.test_runtime
+)
 
 while IFS= read -r script; do
   bash -n "$script"

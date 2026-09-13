@@ -127,6 +127,16 @@ struct Claim {
     result: Option<Signed>,
 }
 
+/// A candidate result is not released while this durable barrier exists. Recovery abandons its
+/// claim before any operator reads, including when late-result tombstone persistence was uncertain.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingRelease {
+    v: u32,
+    job_id: String,
+    submission_digest: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GradingLedger {
@@ -235,6 +245,14 @@ fn create_private<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     file.write_all(&serde_json::to_vec(value)?)?;
     file.sync_all()?;
     File::open(path.parent().context("state parent")?)?.sync_all()?;
+    Ok(())
+}
+
+fn clear_pending_release(dir: &Path) -> anyhow::Result<()> {
+    let path = dir.join("pending-release.json");
+    protected(&path, false)?;
+    std::fs::remove_file(path)?;
+    File::open(dir)?.sync_all()?;
     Ok(())
 }
 
@@ -351,6 +369,28 @@ impl GradingService {
         }
         let mut changed = ledger.scorer_keys != keys;
         ledger.scorer_keys = keys;
+        let release_path = dir.join("pending-release.json");
+        let pending_release = match std::fs::symlink_metadata(&release_path) {
+            Ok(_) => Some(load_private::<PendingRelease>(&release_path)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(pending) = &pending_release {
+            ensure!(
+                pending.v == FORMAT
+                    && valid_id(&pending.job_id)
+                    && valid_digest(&pending.submission_digest),
+                "invalid result release barrier"
+            );
+            let claim = ledger
+                .claims
+                .get_mut(&pending.submission_digest)
+                .context("result release barrier without a consumed claim")?;
+            ensure!(claim.job.job_id == pending.job_id, "result release barrier identity mismatch");
+            claim.state = JobState::Abandoned;
+            claim.result = None;
+            changed = true;
+        }
         for claim in ledger.claims.values_mut() {
             if claim.state == JobState::DispatchConsumed {
                 // Delivery/execution may have happened. Restart revokes result authority and never
@@ -361,6 +401,10 @@ impl GradingService {
         }
         if changed {
             persist_private(&dir.join("ledger.json"), &ledger)?;
+        }
+        if pending_release.is_some() {
+            // The private tombstone is durable before clearing recovery's release barrier.
+            clear_pending_release(&dir)?;
         }
         Ok(Self {
             dir,
@@ -860,6 +904,19 @@ impl GradingService {
     }
 
     fn commit_result(&self, run: &RunRecord, signed: &Signed, now: u64) -> anyhow::Result<()> {
+        self.commit_result_with_persistence(run, signed, now, |next| self.save_ledger(next), now_unix)
+    }
+
+    /// Clock/persistence injection keeps the fsync-expiry boundary deterministically testable.
+    /// The ledger mutex covers candidate persistence, the final authority check and publication.
+    fn commit_result_with_persistence(
+        &self,
+        run: &RunRecord,
+        signed: &Signed,
+        now: u64,
+        mut persist: impl FnMut(&GradingLedger) -> anyhow::Result<()>,
+        release_clock: impl FnOnce() -> u64,
+    ) -> anyhow::Result<()> {
         ensure!(
             !self.grading_poisoned.load(Ordering::SeqCst),
             "grading unavailable"
@@ -904,15 +961,60 @@ impl GradingService {
                 .lock()
                 .unwrap()
                 .get(&claim.job.job_id)
-                .is_some_and(|deadline| !deadline.expired(now)),
+                .is_some_and(|deadline| {
+                    deadline.fencing_token == claim.job.fencing_token && !deadline.expired(now)
+                }),
             "grading monotonic deadline expired or lost"
         );
+        let pending = PendingRelease {
+            v: FORMAT,
+            job_id: claim.job.job_id.clone(),
+            submission_digest: claim.job.submission_digest.clone(),
+        };
+        if let Err(error) = create_private(&self.dir.join("pending-release.json"), &pending) {
+            self.grading_poisoned.store(true, Ordering::SeqCst);
+            return Err(error);
+        }
         let mut next = ledger.clone();
         let claim = next.claims.get_mut(&hint.submission_digest).unwrap();
         claim.state = JobState::ResultCommitted;
         claim.result = Some(signed.clone());
         next.wall_high_water = now;
-        self.save_ledger(&next)?;
+        if let Err(error) = persist(&next) {
+            self.grading_poisoned.store(true, Ordering::SeqCst);
+            return Err(error); // barrier remains; ambiguous writes cannot be released on restart
+        }
+        let release_now = release_clock();
+        let claim = &next.claims[&hint.submission_digest];
+        let releasable = !self.grading_poisoned.load(Ordering::SeqCst)
+            && release_now >= next.wall_high_water
+            && claim.job.fencing_token == ledger.high_water
+            && verify_result(signed, &key, &claim.job, release_now).is_ok()
+            && self.deadlines.lock().unwrap().get(&claim.job.job_id).is_some_and(|deadline| {
+                deadline.fencing_token == claim.job.fencing_token && !deadline.expired(release_now)
+            });
+        if !releasable {
+            let claim = next.claims.get_mut(&hint.submission_digest).unwrap();
+            claim.state = JobState::Abandoned;
+            claim.result = None;
+            next.wall_high_water = next.wall_high_water.max(release_now);
+            let tombstone = persist(&next);
+            // Even an uncertain tombstone write must never expose the candidate in this process.
+            *ledger = next;
+            if let Err(error) = tombstone {
+                self.grading_poisoned.store(true, Ordering::SeqCst);
+                return Err(error); // durable barrier forces the same tombstone on restart
+            }
+            if let Err(error) = clear_pending_release(&self.dir) {
+                self.grading_poisoned.store(true, Ordering::SeqCst);
+                return Err(error);
+            }
+            anyhow::bail!("grading authority expired or changed during result persistence");
+        }
+        if let Err(error) = clear_pending_release(&self.dir) {
+            self.grading_poisoned.store(true, Ordering::SeqCst);
+            return Err(error);
+        }
         *ledger = next;
         Ok(())
     }
