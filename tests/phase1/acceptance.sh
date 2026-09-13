@@ -11,6 +11,7 @@ CTL=http://127.0.0.1:7100
 OP=$(cat ~/.deadswitch/controller/operator.token)
 CTL_PUB=${CTL_PUB:-$(cat /tmp/ds-ctl-pub)}
 TEMPLATE="$(cd "$(dirname "$0")/../.." && pwd)/infra/lima/vm2.yaml"
+MODEL=${DS_MODEL:-qwen2.5:7b}
 SUDO=$(sed -n 's/^SUDO=//p' "$(cd "$(dirname "$0")/../.." && pwd)/.env" 2>/dev/null)
 SUDOP(){ printf '%s\n' "$SUDO" | sudo -S -p '' "$@"; }  # password-sudo for ops outside the NOPASSWD allowlist
 pass=0; fail=0
@@ -47,7 +48,7 @@ teardown(){ # release the exclusive lock so the next test can run, even after a 
   SUDOP pkill -f "deadswitch-hostd run --run-id $run" 2>/dev/null || true
   sleep 3  # let the guard destroy the now-ownerless VM2
 }
-launch(){ sudo -n /usr/local/sbin/deadswitch-hostd run --run-id "$1" --controller $CTL --controller-pubkey "$CTL_PUB" --model qwen3:14b --ollama http://127.0.0.1:11434 --max-run-s "${2:-400}" --template "$TEMPLATE" >/tmp/acc-$1.log 2>&1 & echo $!; }
+launch(){ sudo -n /usr/local/sbin/deadswitch-hostd run --run-id "$1" --controller $CTL --controller-pubkey "$CTL_PUB" --model "$MODEL" --ollama http://127.0.0.1:11434 --max-run-s "${2:-400}" --template "$TEMPLATE" >/tmp/acc-$1.log 2>&1 & echo $!; }
 
 echo "===== A1: sealed pf user-gate blocks VM2 egress, preserves the hostd path (trusted, no VM needed)"
 sudo -n /sbin/pfctl -q -a deadswitch -f /etc/pf.anchors/deadswitch 2>/dev/null
@@ -84,7 +85,7 @@ echo "===== A3: operator revoke → dead switch destroys VM2, VM1 cannot outlive
 R=$(mint); echo "run=$R"
 # Launch as a DIRECT child of this shell (not via $(launch ...), whose command-substitution subshell
 # reparents the background process so `wait` would return 127) — so we can read hostd's real exit code.
-sudo -n /usr/local/sbin/deadswitch-hostd run --run-id "$R" --controller $CTL --controller-pubkey "$CTL_PUB" --model qwen3:14b --ollama http://127.0.0.1:11434 --max-run-s 400 --template "$TEMPLATE" >/tmp/acc-$R.log 2>&1 &
+sudo -n /usr/local/sbin/deadswitch-hostd run --run-id "$R" --controller $CTL --controller-pubkey "$CTL_PUB" --model "$MODEL" --ollama http://127.0.0.1:11434 --max-run-s 400 --template "$TEMPLATE" >/tmp/acc-$R.log 2>&1 &
 PID=$!
 if wait_eval "$R"; then
   vz=$(vz_pid_of "$R"); echo "captured VMM pid=$vz"
@@ -128,7 +129,7 @@ echo "===== A5: positive — VM1 boots, harness RUNS from the prestaged image to
 # kill: proves the harness actually executes from the verified deps image and that egress is contained
 # (Codex end-of-P1 #6 — a mandatory positive harness-execution test, not just seal-and-kill).
 R=$(mint); echo "run=$R"
-sudo -n /usr/local/sbin/deadswitch-hostd run --run-id "$R" --controller $CTL --controller-pubkey "$CTL_PUB" --model qwen3:14b --ollama http://127.0.0.1:11434 --max-run-s 900 --template "$TEMPLATE" >/tmp/acc-$R.log 2>&1 &
+sudo -n /usr/local/sbin/deadswitch-hostd run --run-id "$R" --controller $CTL --controller-pubkey "$CTL_PUB" --model "$MODEL" --ollama http://127.0.0.1:11434 --max-run-s 900 --template "$TEMPLATE" >/tmp/acc-$R.log 2>&1 &
 PID=$!
 E=/var/lib/deadswitch/evidence/$R.jsonl
 harness_seen=no

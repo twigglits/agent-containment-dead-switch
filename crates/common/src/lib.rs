@@ -378,6 +378,28 @@ impl Deadline {
             epoch: lease.epoch,
         })
     }
+    /// Accept a lease on the UNTRUSTED guest side (the in-VM2 supervisor), whose wall clock is NOT
+    /// synced to the trusted controller/host clock. Freshness and anti-replay come from the
+    /// strictly-increasing fencing token; the trusted hostd already validated `issued_at` against the
+    /// synced controller clock before serving this lease, so re-checking it against the guest's own
+    /// (possibly skewed) clock is wrong and was silently rejecting every eval lease when a freshly
+    /// cloned guest's clock drifted from the host. The fail-closed deadline is computed monotonically
+    /// from RECEIPT (full capped TTL), and the wall deadline is expressed in the guest's own clock so
+    /// `expired()` stays self-consistent. This only governs the guest's defense-in-depth self-kill;
+    /// the authoritative timing is enforced by hostd (trusted, synced clock) + the host pf gate + the
+    /// host-independent kill.
+    pub fn accept_guest(lease: &Lease, high_water: u64, guest_wall_now: u64) -> Result<Deadline, String> {
+        if lease.fencing_token <= high_water {
+            return Err(format!("fencing token {} not above high-water {}", lease.fencing_token, high_water));
+        }
+        let ttl = lease.ttl_s.min(MAX_LEASE_TTL_S);
+        Ok(Deadline {
+            mono: Instant::now() + Duration::from_secs(ttl),
+            wall: guest_wall_now + ttl,
+            fencing_token: lease.fencing_token,
+            epoch: lease.epoch,
+        })
+    }
     pub fn expired(&self, wall_now: u64) -> bool {
         Instant::now() >= self.mono || wall_now >= self.wall
     }
@@ -472,6 +494,24 @@ mod tests {
         // wall clock rolled back cannot extend past the monotonic deadline
         let short = Deadline { mono: Instant::now(), wall: now + 1000, fencing_token: 6, epoch: 1 };
         assert!(short.expired(now - 500));
+    }
+
+    #[test]
+    fn accept_guest_ignores_clock_skew_but_honors_fencing() {
+        let now = 1_000_000;
+        // A guest whose clock is wildly skewed from the lease's issued_at STILL accepts (unlike
+        // accept(), which would reject) — the guest clock is untrusted/unsynced; freshness comes
+        // from the fencing token (hostd already validated issued_at on the trusted side).
+        let skewed_guest = now + 10_000; // guest clock 10000s ahead of the lease issued_at
+        let d = Deadline::accept_guest(&lease(6, now, 15), 5, skewed_guest).unwrap();
+        assert_eq!(d.epoch, 1);
+        // deadline is receipt-based in the guest's own clock, so expired() is self-consistent
+        assert!(!d.expired(skewed_guest));
+        assert!(d.expired(skewed_guest + MAX_LEASE_TTL_S));
+        // ttl still capped
+        assert_eq!(d.wall, skewed_guest + MAX_LEASE_TTL_S);
+        // fencing still enforced: a token not above the high-water is rejected
+        assert!(Deadline::accept_guest(&lease(5, now, 15), 5, skewed_guest).is_err());
     }
 
     #[test]

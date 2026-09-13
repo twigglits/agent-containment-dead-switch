@@ -462,13 +462,14 @@ async fn get_lease(State(app): State<Arc<App>>, h: HeaderMap) -> Result<Json<Lea
     check_token(&app, &h)?;
     let l = app.live.lock().unwrap();
     let expired = l.deadline.as_ref().map(|d| d.expired(now_unix())).unwrap_or(true);
-    Ok(Json(LeaseView {
+    let view = LeaseView {
         run_id: app.run_id.clone(),
         epoch: l.deadline.as_ref().map(|d| d.epoch).unwrap_or(0),
         gate: l.gate,
         lease: if expired || l.destroy_reason.is_some() { None } else { l.lease_signed.clone() },
         controller_pubkey: hex::encode(app.controller_pk.to_bytes()),
-    }))
+    };
+    Ok(Json(view))
 }
 
 async fn post_report(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body::Bytes) -> Result<Json<serde_json::Value>, (StatusCode, String)> {

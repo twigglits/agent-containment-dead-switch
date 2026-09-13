@@ -154,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
     while deadline.is_none() {
         anyhow::ensure!(wait_start.elapsed() < Duration::from_secs(60), "no prestage lease within 60s");
         if let Ok(Some((l, _))) = h.verified_lease(&controller_pk, &run_id).await {
-            if let Ok(d) = Deadline::accept(&l, high_water, now_unix()) {
+            if let Ok(d) = Deadline::accept_guest(&l, high_water, now_unix()) {
                 high_water = l.fencing_token;
                 deadline = Some(d);
             }
@@ -178,7 +178,7 @@ async fn main() -> anyhow::Result<()> {
     loop {
         match h.verified_lease(&controller_pk, &run_id).await {
             Ok(Some((l, gate))) => {
-                if let Ok(d) = Deadline::accept(&l, high_water, now_unix()) {
+                if let Ok(d) = Deadline::accept_guest(&l, high_water, now_unix()) {
                     high_water = l.fencing_token;
                     let epoch = d.epoch;
                     deadline = Some(d);
@@ -255,7 +255,7 @@ async fn main() -> anyhow::Result<()> {
         // rung-1 lease copy
         match h.verified_lease(&controller_pk, &run_id).await {
             Ok(Some((l, _))) => {
-                if let Ok(d) = Deadline::accept(&l, high_water, now_unix()) {
+                if let Ok(d) = Deadline::accept_guest(&l, high_water, now_unix()) {
                     high_water = l.fencing_token;
                     deadline = Some(d);
                 }

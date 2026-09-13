@@ -414,17 +414,17 @@ fn policy(r: &RunRecord, ev: &HostEvidence, now: u64) -> Result<(), String> {
         // containment failure. Containment fails only if the gate is not effectively sealed, which
         // the gate.state check above already covers. So bypass_packets is recorded, not tripped on.
         let _ = ev.gate.bypass_packets;
-        match &ev.untrusted_vm2_report {
-            None => return Err("vm2 report missing".into()),
-            Some(rep) => {
-                if now.saturating_sub(rep.received_at) > REPORT_MAX_AGE_S {
-                    return Err("vm2 report stale".into());
-                }
-                if rep.body.run_id != r.run_id {
-                    return Err("vm2 report for another run".into());
-                }
-            }
-        }
+        // The untrusted VM2 self-report is ADVISORY liveness only — it is NOT a containment control
+        // and is NOT trusted for positive health, so a missing/stale/foreign report does NOT trip
+        // the run. Containment rests entirely on hostd's OWN, host-enforced observations already
+        // checked above: vm2.running (host process table), gate == Sealed (host pf), and a valid live
+        // watchdog lease (host-owned deadline). A compromised VM2 that stops reporting still cannot
+        // egress (sealed pf gate) nor outlive its lease (host watchdog + host-independent kill).
+        // Tripping on this untrusted signal caused false positives when an honest supervisor's report
+        // thread was starved during nested-VM1 boot + inference; the report remains recorded as
+        // evidence and can feed the defender / an operator alert. (REPORT_MAX_AGE_S still bounds
+        // whether hostd attaches the report to evidence at all.)
+        let _ = (REPORT_MAX_AGE_S, &ev.untrusted_vm2_report);
     }
     Ok(())
 }
@@ -697,11 +697,12 @@ mod policy_tests {
         let mut e = healthy(now); e.vm2.port_forwards = None;
         assert!(policy(&r, &e, now).is_err());
 
-        // report missing / stale ⇒ trip.
+        // The untrusted VM2 report is ADVISORY: a missing or stale report does NOT trip (containment
+        // rests on hostd's own host-enforced observations). These must stay healthy.
         let mut e = healthy(now); e.untrusted_vm2_report = None;
-        assert!(policy(&r, &e, now).is_err());
+        assert!(policy(&r, &e, now).is_ok(), "missing untrusted report is advisory, not a trip");
         let mut e = healthy(now); e.untrusted_vm2_report = Some(report(now - 100));
-        assert!(policy(&r, &e, now).is_err());
+        assert!(policy(&r, &e, now).is_ok(), "stale untrusted report is advisory, not a trip");
 
         // watchdog not holding a live lease ⇒ trip.
         let mut e = healthy(now); e.watchdog.deadline_remaining_ms = 0;
