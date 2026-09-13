@@ -27,6 +27,8 @@ pub struct JobContext {
     pub job_dir: PathBuf,
     pub submission_path: PathBuf,
     pub capture_path: PathBuf,
+    /// Pinned once on admission; every hook receives exactly the same launch contract.
+    pub wall_timeout_secs: u64,
 }
 
 /// Both clocks and operator shutdown are checked throughout execution, freezing and publication.
@@ -333,6 +335,7 @@ impl ResultPublisher for HttpPublisher {
         let until = Instant::now() + max_time;
         let client = reqwest::blocking::Client::builder()
             .no_proxy()
+            .retry(reqwest::retry::never())
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(max_time)
             .timeout(max_time)

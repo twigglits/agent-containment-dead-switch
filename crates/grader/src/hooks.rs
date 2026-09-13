@@ -65,13 +65,6 @@ impl ShellHooks {
             .env("LC_ALL", "C")
             .env("PYTHONDONTWRITEBYTECODE", "1");
         if let Some(ctx) = job {
-            let remaining = ctx
-                .job
-                .expires_at
-                .saturating_sub(deadswitch_common::now_unix());
-            // Leave time for freeze + teardown + append. A nearly expired dispatch launches
-            // nothing. Cleanup hooks receive this inert value even when authority has expired.
-            let launch_seconds = remaining.saturating_sub(20).clamp(1, 90);
             command
                 .env("DS_JOB_ID", &ctx.job.job_id)
                 .env("DS_SANDBOX_ID", &ctx.sandbox_id)
@@ -82,7 +75,7 @@ impl ShellHooks {
                 .env("DS_INPUT_VERSION", &ctx.job.input_version)
                 .env("DS_SCORER_VERSION", &ctx.job.scorer_version)
                 .env("DS_JOB_EXPIRES_AT", ctx.job.expires_at.to_string())
-                .env("DS_WALL_TIMEOUT_SECS", launch_seconds.to_string())
+                .env("DS_WALL_TIMEOUT_SECS", ctx.wall_timeout_secs.to_string())
                 .env("DS_CAPTURE_PATH", &ctx.capture_path);
         }
         let bytes = run_bounded(command, authority, max_time)?;

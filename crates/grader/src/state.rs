@@ -250,6 +250,7 @@ impl Store {
             sandbox_id: sandbox_id.to_owned(),
             submission_path: job_dir.join("submission.bin"),
             capture_path: job_dir.join("capture.bin"),
+            wall_timeout_secs: job.expires_at.saturating_sub(deadswitch_common::now_unix()).saturating_sub(20).clamp(1, 90),
             job_dir,
         }
     }
@@ -267,6 +268,7 @@ impl Store {
 fn validate_binding(binding: &Binding) -> anyhow::Result<()> {
     deadswitch_common::pubkey_from_hex(&binding.controller_public_key)?;
     deadswitch_common::pubkey_from_hex(&binding.scorer_public_key)?;
+    ensure!(binding.controller_public_key != binding.scorer_public_key, "controller and scorer must have distinct keys");
     ensure!(valid_digest(&binding.expected_output_digest), "expected output binding");
     Ok(())
 }

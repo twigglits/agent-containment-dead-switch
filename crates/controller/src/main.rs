@@ -939,7 +939,13 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-    let grading = grading::configure(&a.grading, &a.state_dir, &key, &hostd_keys, a.operator_listen)?;
+    let grading = grading::configure(
+        &a.grading,
+        &a.state_dir,
+        &key,
+        &hostd_keys,
+        a.operator_listen,
+    )?;
     info!(controller_pubkey = %pubkey_hex(&key), runs = runs.len(), "controller up");
     let app = Arc::new(App {
         key,

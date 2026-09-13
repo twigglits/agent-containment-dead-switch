@@ -190,11 +190,14 @@ def command(args, timeout=10, check=True):
 
 
 def show_unit(name):
-    result = command(["/usr/bin/systemctl", "show", name, "--property=LoadState,ActiveState,SubState,ControlGroup"])
+    result = command(["/usr/bin/systemctl", "show", name, "--property=LoadState,ActiveState,SubState,ControlGroup"], check=False)
     lines = result.stdout.decode("ascii").splitlines()
     fields = unique_fields(line.split("=", 1) for line in lines)
     if set(fields) != {"LoadState", "ActiveState", "SubState", "ControlGroup"}:
         raise ValueError("incomplete systemd observation")
+    missing = fields == dict(LoadState="not-found", ActiveState="inactive", SubState="dead", ControlGroup="")
+    if result.returncode and not (result.returncode in {1, 4} and missing):
+        raise ValueError("failed systemd observation")
     return fields
 
 
@@ -434,13 +437,19 @@ def destroy_all(config):
         if not SID.fullmatch(entry.name):
             raise ValueError("unknown disposable storage: quarantine")
         identities.add(entry.name)
+    errors = []
     for entry in config["state_root"].glob("*.json"):
         if not SID.fullmatch(entry.stem):
             raise ValueError("unknown sandbox journal: quarantine")
-        identities.add(entry.stem)
+        try:
+            archived = read_state(config, entry.stem)
+            if archived["phase"] != "destroyed":
+                identities.add(entry.stem)
+        except (OSError, ValueError, KeyError, TypeError):
+            errors.append("corrupt journal")
+            identities.add(entry.stem)
     if len(identities) > 4096:
         raise ValueError("operator archival required before further grading")
-    errors = []
     for sandbox_id in sorted(identities):
         try:
             destroy(config, sandbox_id)
