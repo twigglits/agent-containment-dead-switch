@@ -149,7 +149,9 @@ root-owned immutable captured file, durably freezes the trusted lifecycle record
 launch fields plus `"frozen":true`, `"captured_output_digest":"<64hex>"`, `"capture_bytes":3`.
 It returns no path or free-text candidate field. Re-observation of an already frozen claim fails.
 
-`destroy.sh` works independently of job expiry. It stops the exact pinned systemd unit, requires
+`destroy.sh` works independently of job expiry. It first fsyncs a permanent `<sandbox_id>.retired`
+barrier in the private hook journal, so even a delayed systemd start is rejected before it can
+spawn QEMU. It stops the exact pinned systemd unit, requires
 complete manager observations and an absent/empty cgroup-v2 subtree, then removes disposable storage
 with symlink-safe deletion and checks absence. It never kills a saved PID or mistakes a stopped
 hook, timeout, `systemctl stop` acceptance or empty stdout for proof. It returns:
@@ -162,6 +164,8 @@ hook, timeout, `systemctl stop` acceptance or empty stdout for proof. It returns
 trusted evidence, not a shared sandbox disk; Rust removes the temporary capture after freezing it
 in memory and confirming destruction, before signing/publishing. Hook terminal records persist to
 prevent reuse. No ambiguous claim is ever relaunched. Restart cleanup does not grade anything.
+The parent grader service permits 40 seconds for its two bounded cleanup phases during shutdown;
+individual sandbox units retain their independent 3-second stop timeout.
 
 `destroy-all.sh` takes no job variables. Rust calls it under its durable service lock before
 readiness, including after ambiguous startup. It reconciles matching systemd units, disposable

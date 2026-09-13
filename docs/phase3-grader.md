@@ -184,10 +184,10 @@ deadswitch-grader run \
   --key-file /etc/deadswitch-grader/scorer.key \
   --controller-pubkey CONTROLLER_PUBLIC_HEX \
   --expected-output /etc/deadswitch-grader/expected-output.bin \
-  --launch-hook /opt/deadswitch/infra/hetzner/grader/launch.sh \
-  --observe-hook /opt/deadswitch/infra/hetzner/grader/observe.sh \
-  --destroy-hook /opt/deadswitch/infra/hetzner/grader/destroy.sh \
-  --destroy-all-hook /opt/deadswitch/infra/hetzner/grader/destroy-all.sh
+  --launch-hook /opt/deadswitch-grader/hooks/launch.sh \
+  --observe-hook /opt/deadswitch-grader/hooks/observe.sh \
+  --destroy-hook /opt/deadswitch-grader/hooks/destroy.sh \
+  --destroy-all-hook /opt/deadswitch-grader/hooks/destroy-all.sh
 ```
 
 The corresponding environment aliases are `DS_GRADER_STATE_DIR`, `DS_GRADER_KEY_FILE`,

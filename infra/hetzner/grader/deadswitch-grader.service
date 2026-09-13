@@ -14,7 +14,9 @@ ExecStart=/usr/local/bin/deadswitch-grader run
 # BindsTo+After on each transient sandbox unit stops it whenever this service becomes inactive.
 Restart=no
 KillMode=control-group
-TimeoutStopSec=6s
+# Rust cancels execution immediately, then has two independently bounded 15s cleanup phases.
+# Give it time to durably record quarantine/teardown; sandbox units retain their own 3s stop bound.
+TimeoutStopSec=40s
 LimitCORE=0
 StandardOutput=journal
 StandardError=journal

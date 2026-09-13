@@ -16,3 +16,4 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio.workspace = true
 axum.workspace = true
+libc = "0.2"

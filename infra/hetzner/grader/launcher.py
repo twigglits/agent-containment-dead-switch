@@ -238,6 +238,28 @@ def state_path(config, sandbox_id):
     return config["state_root"] / (sandbox_id + ".json")
 
 
+def retired_path(config, sandbox_id):
+    unit(sandbox_id)
+    return config["state_root"] / (sandbox_id + ".retired")
+
+
+def require_unretired(config, sandbox_id):
+    marker = retired_path(config, sandbox_id)
+    if marker.exists() or marker.is_symlink():
+        raise ValueError("retired sandbox: delayed launch rejected")
+
+
+def retire(config, sandbox_id):
+    # Persist the barrier BEFORE stopping/checking the unit. A delayed StartTransientUnit may
+    # arrive after systemctl stop returned; any later supervisor must reject before spawning
+    # QEMU. A supervisor that passed its check already belongs to the unit being stopped.
+    marker = retired_path(config, sandbox_id)
+    try:
+        bounded_write(marker, b"retired\n")
+    except FileExistsError:
+        protected(marker)
+
+
 def read_state(config, sandbox_id):
     state = json.loads(read_regular(state_path(config, sandbox_id), 32768), object_pairs_hook=unique_fields)
     if (type(state) is not dict or set(state) != {"job", "phase", "observation"} or
@@ -259,6 +281,7 @@ def read_state(config, sandbox_id):
 
 
 def launch(config, job):
+    require_unretired(config, job["sandbox_id"])
     now = int(time.time())
     if job["expires_at"] <= now + job["wall_seconds"]:
         raise ValueError("insufficient grading lease")
@@ -331,6 +354,7 @@ def capture_candidate(process, wall_seconds, monotonic=time.monotonic):
 
 
 def supervise(config, sandbox_id):
+    require_unretired(config, sandbox_id)
     state = read_state(config, sandbox_id)
     if state["phase"] != "claimed":
         raise ValueError("no reusable execution authority")
@@ -338,6 +362,7 @@ def supervise(config, sandbox_id):
     if int(time.time()) + job["wall_seconds"] >= job["expires_at"]:
         raise ValueError("expired launch authority")
     started = int(time.time())
+    require_unretired(config, sandbox_id)
     process = subprocess.Popen(qemu_command(config, job), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
                                cwd=config["sandbox_root"] / sandbox_id, start_new_session=True, close_fds=True)
@@ -409,6 +434,7 @@ def processes_gone(config, sandbox_id):
 
 
 def destroy(config, sandbox_id):
+    retire(config, sandbox_id)
     processes_gone(config, sandbox_id)
     work = config["sandbox_root"] / sandbox_id
     if work.exists() or work.is_symlink():
@@ -449,6 +475,8 @@ def destroy_all(config):
             archived = read_state(config, entry.stem)
             if archived["phase"] != "destroyed":
                 identities.add(entry.stem)
+            else:
+                retire(config, entry.stem)
         except (OSError, ValueError, KeyError, TypeError):
             errors.append("corrupt journal")
             identities.add(entry.stem)

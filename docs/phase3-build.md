@@ -142,3 +142,21 @@ The offline suite builds and tests the workspace, runs Phase 2/3 Python regressi
 checks, and requires the live skeleton to return **77 / BLOCKED**. See `tests/phase3/acceptance.sh`
 for the trusted-side G1–G5 observations still required. No live acceptance or Phase 3 deployment
 approval is implied by a green local suite.
+
+## Implementation inventory
+
+| Files | Change |
+| --- | --- |
+| `Cargo.toml`, `Cargo.lock` | Add the grader workspace member and dependency lock entries |
+| `crates/common/src/lib.rs`, `grading.rs`, `grading/tests.rs` | Signed grading schemas, fixed vocabulary, framing, digest binding and grading deadlines |
+| `crates/controller/Cargo.toml`, `src/main.rs`, `src/grading.rs`, `src/grading/tests.rs` | Broker, durable authorization/budget/results, separate routers and regression tests |
+| `crates/grader/Cargo.toml`, `src/{lib,main,state,hooks,tests}.rs` | Grader service, scorer, fail-closed lifecycle, private durable state, bounded hooks and tests |
+| `crates/evalagent` termination integration | Preserve shutdown enforcement and add signed stop notification only after independently confirmed destruction |
+| `infra/hetzner/grader/` | Exact nft guards, QEMU hooks/launcher, fixture, systemd/config examples and deployment instructions |
+| `infra/hetzner/ds-grader-kill.py` | Separate off-host grader deletion with durable fencing, positive confirmation and quarantine |
+| `tests/phase3/` | Local Rust/Python/shell runner, actuator/hook/airlock tests and explicit BLOCKED live skeleton |
+| `docs/phase3-{build,controller,grader}.md` | Wire, hooks, deployment, state and residual-limit contracts |
+
+Existing Phase 1/2 firewall rules and the original `ds_kill.py` actuator remain unchanged. The
+evalagent stop notification adds no execution authority. No deployment or Git write is part of
+the local build workflow.

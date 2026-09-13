@@ -25,6 +25,7 @@ use tracing::{error, info, warn};
 mod authority;
 mod heartbeat;
 mod proxy;
+mod termination;
 
 #[cfg(test)]
 mod lifecycle_tests;
@@ -294,7 +295,8 @@ extern "C" {
 /// The dead-switch itself: absence of a fresh lease => death. Seal first (best-effort, logged) so
 /// egress is blackholed even if the destroy step below fails; both steps run regardless of the
 /// other's outcome, then the process exits non-zero.
-fn fail_closed(a: &RunArgs, authority: &Authority, reason: &str) -> anyhow::Error {
+fn fail_closed(a: &RunArgs, authority: &Authority, key: &SigningKey, reason: &str) -> anyhow::Error {
+    let started = Instant::now();
     // Revoke in-process authority BEFORE either shell hook. A failed/hanging hook cannot keep
     // dispatch alive, nor deliver backend content from an already-running inference.
     authority.stop(reason);
@@ -302,8 +304,16 @@ fn fail_closed(a: &RunArgs, authority: &Authority, reason: &str) -> anyhow::Erro
     if let Err(e) = run_hook(a, &a.seal_cmd, "seal") {
         error!(error = %e, "fail-closed: seal hook failed (continuing to destroy)");
     }
-    if let Err(e) = run_hook(a, &a.destroy_cmd, "destroy") {
-        error!(error = %e, "fail-closed: destroy hook failed");
+    match run_hook(a, &a.destroy_cmd, "destroy") {
+        Err(e) => error!(error = %e, "fail-closed: destroy hook failed"),
+        Ok(()) => {
+            // An exit status is not independent proof of death. This additional observation and
+            // optional controller notification happen only AFTER authority was revoked and both
+            // original cleanup hooks ran. Failure leaves grading blocked and never resumes a run.
+            if let Err(e) = termination::notify_after_destroy(a, key, started) {
+                warn!(error = %e, "teardown confirmation unavailable; grading remains blocked");
+            }
+        }
     }
     anyhow::anyhow!("fail closed: {reason}")
 }
@@ -312,6 +322,7 @@ fn fail_closed(a: &RunArgs, authority: &Authority, reason: &str) -> anyhow::Erro
 /// particular, boot, bind, enroll, and durable high-water failures must not leak a live workload.
 struct RunGuard<'a> {
     args: &'a RunArgs,
+    key: &'a SigningKey,
     authority: std::sync::Arc<Authority>,
     armed: bool,
 }
@@ -319,7 +330,7 @@ struct RunGuard<'a> {
 impl Drop for RunGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
-            let _ = fail_closed(self.args, &self.authority, "run exited before cleanup");
+            let _ = fail_closed(self.args, &self.authority, self.key, "run exited before cleanup");
         }
     }
 }
@@ -427,6 +438,7 @@ fn run(mut a: RunArgs) -> anyhow::Result<()> {
     let authority = Authority::new(&SHOULD_DIE);
     let mut guard = RunGuard {
         args: &a,
+        key: &key,
         authority: authority.clone(),
         armed: true,
     };
@@ -445,7 +457,7 @@ fn run(mut a: RunArgs) -> anyhow::Result<()> {
         Ok(()) => "run stopped".to_string(),
         Err(e) => format!("{e:#}"),
     };
-    let error = fail_closed(&a, &authority, &reason);
+    let error = fail_closed(&a, &authority, &key, &reason);
     guard.armed = false;
     Err(error)
 }

@@ -87,6 +87,16 @@ fn scorer_uses_only_exact_candidate_bytes_and_bound_artifact() {
         b"42\n"
     )
     .is_err());
+    let mut wrong_fixture = job.clone();
+    wrong_fixture.task_id = "other-task".into();
+    assert!(score_candidate(
+        &wrong_fixture,
+        submission,
+        &job.submission_digest,
+        b"42\n",
+        b"42\n"
+    )
+    .is_err());
     assert!(score_candidate(
         &job,
         submission,
@@ -582,10 +592,13 @@ fn state_requires_explicit_initialization_and_rejects_loss_corruption_and_key_re
 fn clock_rollback_cannot_reset_durable_authority() {
     let (dir, store) = initialized();
     let bytes = b"candidate";
+    let initial: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.0.join("ledger.json")).unwrap()).unwrap();
+    let floor = initial["wall_floor"].as_u64().unwrap();
     assert!(store
         .lock()
         .unwrap()
-        .claim(fixture_job(bytes, 1), bytes, now_unix() - 1)
+        .claim(fixture_job(bytes, 1), bytes, floor - 1)
         .is_err());
     drop(store);
     let ledger_path = dir.0.join("ledger.json");
@@ -674,5 +687,31 @@ fn hook_shutdown_and_both_clock_expiry_are_enforced_independently() {
         let mut command = Command::new("/bin/sh");
         command.arg("-c").arg("sleep 60");
         assert!(hooks::run_bounded(command, Some(&authority), Duration::from_millis(100)).is_err());
+    }
+}
+
+#[test]
+fn hook_descendants_cannot_continue_after_timeout_or_successful_parent_exit() {
+    let (dir, _store) = initialized();
+    for (index, script, success) in [
+        (0, "(sleep 0.4; printf alive > \"$1\") & sleep 60", false),
+        (
+            1,
+            "(sleep 0.4; printf alive > \"$1\") >/dev/null & printf '{}'",
+            true,
+        ),
+    ] {
+        let marker = dir.0.join(format!("descendant-{index}"));
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(script).arg("hook").arg(&marker);
+        assert_eq!(
+            hooks::run_bounded(command, None, Duration::from_millis(100)).is_ok(),
+            success
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !marker.exists(),
+            "hook descendant survived process-group destruction"
+        );
     }
 }

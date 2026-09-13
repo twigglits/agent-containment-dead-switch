@@ -151,6 +151,12 @@ pub fn score_candidate(
     captured_output: &[u8],
     expected_output: &[u8],
 ) -> anyhow::Result<Score> {
+    ensure!(
+        job.task_id == TASK_ID
+            && job.input_version == INPUT_VERSION
+            && job.scorer_version == SCORER_VERSION,
+        "unpinned scorer fixture"
+    );
     job.bind_submission(pinned_submission)
         .map_err(|e| anyhow::anyhow!(e))?;
     ensure!(

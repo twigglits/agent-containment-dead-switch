@@ -226,7 +226,8 @@ fn failing_seal_still_destroys_and_revokes_authority() {
         .unwrap();
     authority.set_gate(GateState::Sealed);
     assert!(authority.ticket().is_some());
-    let _ = fail_closed(&a, &authority, "test denial");
+    let key = SigningKey::from_bytes(&[1; 32]);
+    let _ = fail_closed(&a, &authority, &key, "test denial");
     assert_eq!(authority.ticket(), None);
     assert!(authority
         .accept(Deadline::accept(&grant(1), 0, now_unix()).unwrap())
@@ -251,6 +252,7 @@ fn boot_failure_guard_cleans_up_even_before_listener_exists() {
     {
         let _guard = RunGuard {
             args: &a,
+            key: &key,
             authority: authority.clone(),
             armed: true,
         };

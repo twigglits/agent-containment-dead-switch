@@ -351,6 +351,7 @@ dependencies = [
  "clap",
  "deadswitch-common",
  "ed25519-dalek",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
