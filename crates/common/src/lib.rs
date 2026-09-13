@@ -247,6 +247,40 @@ pub enum DefenderAction {
     TerminateVm1 { reason: String },
 }
 
+/// Signed challenge REQUEST from hostd. Phase 2: controller↔hostd crosses a network (not loopback),
+/// so the REQUEST is authenticated against the enrolled hostd key too — not just the signed response.
+/// Prevents an on-net party from flooding `/challenge` to force missed-challenge trips.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChallengeRequest {
+    pub v: u32,
+    #[serde(rename = "type")]
+    pub kind: String, // "challenge_request"
+    pub run_id: String,
+    pub aud: String, // controller
+    pub incarnation: String,
+    pub issued_at: u64,
+    /// Unique per request, retained durably by the controller for the freshness window.
+    pub request_id: String,
+}
+
+/// Signed defender relay from hostd: the untrusted in-guest defender's action, relayed and SIGNED by
+/// the per-run hostd key so the controller only accepts authority-reducing actions from the real
+/// hostd (Phase 2 network hop). Every DefenderAction only reduces authority.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DefenderReport {
+    pub v: u32,
+    #[serde(rename = "type")]
+    pub kind: String, // "defender_report"
+    pub run_id: String,
+    pub aud: String, // controller
+    pub incarnation: String,
+    pub issued_at: u64,
+    pub request_id: String,
+    pub action: DefenderAction,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LogEvent {
     pub seq: u64,
@@ -337,6 +371,29 @@ pub fn pubkey_from_hex(h: &str) -> anyhow::Result<VerifyingKey> {
 pub fn pubkey_hex(k: &SigningKey) -> String {
     hex::encode(k.verifying_key().to_bytes())
 }
+
+/// Create with restrictive permissions on the FIRST write (chmod-after-write leaks under a normal
+/// umask). Existing keys must also be private regular files; never silently follow a key symlink.
+pub fn load_or_create_signing_key(path: &Path) -> anyhow::Result<SigningKey> {
+    use std::io::Write;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let key = SigningKey::generate(&mut rand::rngs::OsRng);
+    match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
+        Ok(mut file) => {
+            file.write_all(hex::encode(key.to_bytes()).as_bytes())?;
+            file.sync_all()?;
+            std::fs::File::open(path.parent().ok_or_else(|| anyhow::anyhow!("key has no parent"))?)?.sync_all()?;
+            Ok(key)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            extern "C" { fn geteuid() -> u32; }
+            let meta = std::fs::symlink_metadata(path)?;
+            anyhow::ensure!(meta.file_type().is_file() && meta.permissions().mode() & 0o077 == 0 && meta.uid() == unsafe { geteuid() }, "key must be a private regular file owned by this user");
+            key_from_hex(&std::fs::read_to_string(path)?)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
 pub fn random_hex(n: usize) -> String {
     use rand::RngCore;
     let mut b = vec![0u8; n];
@@ -366,11 +423,11 @@ impl Deadline {
             return Err(format!("lease issued_at {} too far from now {}", lease.issued_at, wall_now));
         }
         let ttl = lease.ttl_s.min(MAX_LEASE_TTL_S);
-        let wall_deadline = lease.issued_at + ttl;
+        let wall_deadline = lease.issued_at.checked_add(ttl).ok_or("lease deadline overflow")?;
         // A delayed lease gets only the time remaining until its wall deadline on the monotonic
         // clock too (N4): it can never buy back a full TTL, so a later wall rollback cannot extend
         // execution past issued_at+ttl.
-        let remaining = wall_deadline.saturating_sub(wall_now);
+        let remaining = wall_deadline.saturating_sub(wall_now).min(ttl);
         Ok(Deadline {
             mono: Instant::now() + Duration::from_secs(remaining),
             wall: wall_deadline,
@@ -415,16 +472,15 @@ impl Deadline {
 /// temp file + fsync + rename. Callers persist BEFORE acknowledging (docs §2 revocation).
 pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
     let tmp = path.with_extension("tmp");
     let bytes = serde_json::to_vec_pretty(value)?;
-    let mut f = std::fs::File::create(&tmp)?;
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
     f.write_all(&bytes)?;
     f.sync_all()?;
     std::fs::rename(&tmp, path)?;
     if let Some(dir) = path.parent() {
-        if let Ok(d) = std::fs::File::open(dir) {
-            let _ = d.sync_all();
-        }
+        std::fs::File::open(dir)?.sync_all()?;
     }
     Ok(())
 }
@@ -524,6 +580,46 @@ mod tests {
         assert_eq!(read_json::<Lease>(&p).unwrap().unwrap().fencing_token, 1);
         std::fs::write(&p, b"{corrupt").unwrap();
         assert!(read_json::<Lease>(&p).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn signed_phase2_requests_reject_unknown_fields_and_cross_role_messages() {
+        let key = SigningKey::generate(&mut OsRng);
+        let request = ChallengeRequest { v: PROTO_V, kind: "challenge_request".into(), run_id: "r".into(), aud: AUD_CONTROLLER.into(), incarnation: "i".into(), issued_at: 100, request_id: random_hex(32) };
+        let signed = Signed::sign(&key, "hostd", &request);
+        assert!(signed.verify::<ChallengeRequest>(&key.verifying_key(), "challenge_request", AUD_CONTROLLER).is_ok());
+        assert!(signed.verify::<DefenderReport>(&key.verifying_key(), "defender_report", AUD_CONTROLLER).is_err());
+        let mut value = serde_json::to_value(request).unwrap();
+        value["extra"] = serde_json::json!(true);
+        assert!(Signed::sign(&key, "hostd", &value).verify::<ChallengeRequest>(&key.verifying_key(), "challenge_request", AUD_CONTROLLER).is_err());
+        let report = DefenderReport { v: PROTO_V, kind: "defender_report".into(), run_id: "r".into(), aud: AUD_CONTROLLER.into(), incarnation: "i".into(), issued_at: 100, request_id: random_hex(32), action: DefenderAction::Pause { reason: "test".into() } };
+        let mut value = serde_json::to_value(report).unwrap();
+        value["extra"] = serde_json::json!(true);
+        assert!(Signed::sign(&key, "hostd", &value).verify::<DefenderReport>(&key.verifying_key(), "defender_report", AUD_CONTROLLER).is_err());
+    }
+
+    #[test]
+    fn future_dated_lease_cannot_buy_more_than_its_ttl() {
+        let now = 1_000_000;
+        let d = Deadline::accept(&lease(6, now + CLOCK_SKEW_S, 15), 5, now).unwrap();
+        assert!(d.mono <= Instant::now() + Duration::from_secs(15));
+        assert!(Deadline::accept(&lease(6, u64::MAX, 15), 5, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn signing_key_is_private_from_creation_and_rejects_exposed_or_symlinked_keys() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!("ds-key-{}", random_hex(8)));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("key");
+        let k = load_or_create_signing_key(&path).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(pubkey_hex(&load_or_create_signing_key(&path).unwrap()), pubkey_hex(&k));
+        symlink(&path, dir.join("link")).unwrap();
+        assert!(load_or_create_signing_key(&dir.join("link")).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load_or_create_signing_key(&path).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

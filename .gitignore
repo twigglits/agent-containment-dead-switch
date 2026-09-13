@@ -6,3 +6,6 @@
 # terraform provider cache
 **/.terraform/
 *.tfstate*
+*.tfvars
+*.tfvars.json
+*.tfplan

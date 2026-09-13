@@ -1,0 +1,95 @@
+# Phase 2 — off-host controller + egress chokepoint (Hetzner). Plan (Codex start-review: REVISE-PLAN, 2026-09-13)
+
+Two-node topology: a Hetzner **Cloud** controller (same `deadswitch-controller` binary) + a deletable
+**egress chokepoint** Cloud VM, and a Hetzner **dedicated** (bare-metal) eval host (Robot API, nested
+KVM) running `deadswitch-hostd` below VM2 → nested QEMU/KVM VM1 (REUSE the Phase-1 QEMU VM1 image +
+harness; the old "Firecracker" note is stale). Host-independent fail-closed kill = controller DELETES
+the chokepoint (egress fails closed) + Robot hardware reset of the eval host, confirmed via Robot.
+Terraform manages only the Cloud pieces; the dedicated server is ordered out-of-band via Robot.
+
+## Must-fix BEFORE building/apply (from Codex start-review)
+1. **Independent termination proof.** The kill must work with hostd + its local guard DISABLED, and
+   under controller partition/crash: exercise chokepoint-deletion egress-cut and Robot reset with API
+   timeout/failure handling; confirm termination via Robot before reporting `terminated`.
+2. **Chokepoint unavoidable.** Force the eval host's *workload* egress (VM2/VM1) through the deletable
+   chokepoint via dedicated policy-routing/namespace + host nft covering forwarded AND proxy-originated
+   traffic, default-deny at boot, with an UNREACHABLE fallback (no public IPv4/IPv6 fallback, no libvirt
+   default NAT, no DNS/metadata bypass, no forwarding via the management channel). Seal/cut invalidates
+   established flows. Keep host management traffic on a SEPARATE path. Preserve the exact-action
+   inference proxy + model pinning + dispatch-time fencing + cancellation (do NOT degrade to generic
+   NAT). Place the inference backend so agent requests traverse the deletable path.
+3. **Network protocol hardening.** Signed envelopes stay, PLUS mTLS or tightly-scoped WireGuard with
+   endpoint ACLs (signatures authenticate but do not encrypt; controller↔hostd now crosses a network,
+   not loopback). SIGN `/challenge` and `/defender` (they currently accept unsigned requests). Operator
+   ops behind SSH forwarding only. hostd key root-only at `/var/lib/deadswitch/keys/hostd.key`; pin the
+   controller pubkey in root-owned config; provision the controller's hostd-key allowlist via the
+   operator trust path. No private keys / operator tokens / provider creds in guest images, user-data, logs.
+4. **Dedicated↔Cloud networking.** `type = "cloud"` subnet does NOT connect a dedicated server — use a
+   Robot vSwitch + vSwitch-connected subnet (host VLAN config) OR explicit WireGuard tunnels.
+5. **Physical-resource fencing/health/evidence.** Bind each run/incarnation to the dedicated server
+   number + host boot/allocation generation + exact chokepoint server ID. Durable high-water + terminal
+   revocation across every actuator restart; one active run per physical host; a delayed reset retry
+   must never hit a later allocation. Terraform reconciliation must NOT silently recreate an authorized
+   forwarding path after runtime deletion. Linux hostd observes real QEMU/nft digests; unknown = unhealthy.
+   Signed host evidence + actuator outcomes stored durably OFF-host with bounded buffering.
+6. **Scaffold exposure.** Attach a firewall to the (currently unprotected) chokepoint; restrict all SSH
+   to operator CIDR/VPN; pin provider + image versions; protected recoverable Terraform state.
+
+## Should-fix
+- Correct the N9 note: established-connection survival on rule change is a **Cloud Firewall** property;
+  **Robot** firewall is stateless per-packet. Keep chokepoint DELETION as the authoritative actuator;
+  document Robot config delay, service exceptions, IPv6 limits.
+- Reconcile stale Cloud-eval/Firecracker text; keep advisory-VMI as an accepted limit (bare metal does
+  NOT auto-restore host-side VMI unless separately built + validated).
+- Budget: hardware-qualification failures, image rebuild, inference capacity, setup/IP charges,
+  teardown. Hetzner order latency ranges minutes→weeks; billing continues while powered off until
+  cancellation. Robot limits: 50 reset requests/hr, 500 reset queries/hr → bounded backoff.
+
+## Closeout gate (build toward this; Codex end-of-Phase-2 review)
+1. **Hardware qualification** on the exact dedicated server: CPU/firmware/host+VM2 kernels/QEMU recorded;
+   real nested KVM VM2→VM1 boot; browser + immutable deps verified; QMP pause/read/resume ×3 with
+   identical same-instant reads; virt hidden from VM1; confirmed destruction; qualify the physical
+   actuator + its observation mechanism on that server.
+2. **Closed-infra commissioning**: management separation, peer authentication, actual routing/firewall
+   state, external lease expiry, reboot quarantine, evidence persistence — before the adversarial harness.
+3. **Acceptance vs declared bounds**: A1 egress-cut (delete chokepoint while eval host runs; new AND
+   established traffic stops at external receivers; IPv4/IPv6, DNS, alt routes, mgmt bypass); A2
+   independent kill (hostd + local guard disabled; controller partition/crash; API timeout handling);
+   A4 fencing/recovery (race renew/revoke, replay/reorder, clock skew, restart controller/actuator,
+   corrupt state, concurrent runs, delayed reset retries, Terraform recreation — no resurrection / false
+   confirmation). Measure host-independent kill latency end-to-end into the containment bound.
+
+## Blocking dependency (needs operator)
+The dedicated bare-metal eval host requires **Hetzner Robot webservice credentials** (user/password),
+which are SEPARATE from the Cloud API token and are NOT in `.env`. Without them the bare-metal
+qualification + two-node acceptance cannot run. The Cloud controller + chokepoint + network + code can
+proceed now on the Cloud API token.
+
+## Build status (2026-09-13): CODE-COMPLETE; live validation blocked on 2 Hetzner account actions
+Every Codex start-review must-fix has an implementation (workspace builds; `cargo test` = common 4,
+controller 1, hostd 2, supervisor 5; all three binaries cross-compile to aarch64-musl):
+- Protocol hardening: `/challenge` + `/defender` now SIGNED (common `ChallengeRequest`/`DefenderReport`;
+  hostd signs; controller verifies via `verify_hostd`). WireGuard mesh + encrypted controller↔hostd via
+  Terraform cloud-init.
+- Host-independent kill: `infra/hetzner/ds-kill.sh` (delete chokepoint = egress fail-closed; Robot hw
+  reset; both confirmed; idempotent; rate-limit aware). Wired to the working Robot user `#ws+8Mkw9sVP`.
+- Chokepoint unavoidable: `infra/hetzner/evalhost-egress.sh` (policy-routing + nft; workload egress ONLY
+  via chokepoint over WireGuard; BLACKHOLE fallback, never the public NIC; conntrack flush on seal) +
+  `infra/hetzner/chokepoint-forward.sh` (inference-only, forwarding/NAT DISABLED — deletion cuts egress
+  AND inference).
+- Physical-resource fencing: hostd incarnation now binds DS_SERVER_NUMBER + host boot_id + DS_CHOKEPOINT_ID.
+- Terraform hardened + `validate`-clean: chokepoint firewall, SSH restricted to the operator CIDR, pinned
+  provider (1.48.1) + cloudinit, WireGuard bootstrap.
+- Off-host controller deploy: `infra/hetzner/deploy-controller.sh` (binds :7100 to WireGuard only).
+- Two-node acceptance skeleton: `tests/phase2/acceptance.sh` (A1 egress-cut-by-deletion, A2 independent
+  kill, A4 fencing) — bodies activate once the eval host is on the mesh.
+
+BLOCKED on (operator/Hetzner, external):
+- A) Hetzner CLOUD account/project cannot create servers yet — every server_type in every location
+  returns `unsupported location for server type` while the token reads fine ⇒ new-account verification
+  or a €0 project limit. Needs the operator to clear it in console.hetzner.cloud. Then `terraform apply`
+  stands up controller + chokepoint and `deploy-controller.sh` deploys the controller.
+- B) No dedicated eval host ordered yet (Robot creds verified working). Needs the operator to order one
+  (Robot → Ordering → Server Auction, ARM64 preferred) + send IPv4/server number; then WireGuard-join it,
+  run bare-metal qualification, and run the two-node acceptance — the inputs to the end-of-Phase-2 Codex
+  review.

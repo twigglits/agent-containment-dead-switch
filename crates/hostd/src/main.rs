@@ -228,7 +228,7 @@ fn pid_start_time(pid: u32) -> Option<u64> {
         return None;
     }
     // stable enough as an incarnation component: hash of the ps start string
-    Some(u64::from_str_radix(&sha256_hex(s.as_bytes())[..15], 16).ok()?)
+    u64::from_str_radix(&sha256_hex(s.as_bytes())[..15], 16).ok()
 }
 
 fn observe_vm2(instance: &str, template_digest: &str, base_image_digest: &str) -> Vm2Obs {
@@ -256,8 +256,28 @@ fn observe_vm2(instance: &str, template_digest: &str, base_image_digest: &str) -
     o
 }
 
-fn incarnation_of(instance: &str, obs: &Vm2Obs) -> String {
-    sha256_hex(format!("{}|{}|{}|{}", instance, obs.started_at.unwrap_or(0), obs.template_digest, obs.base_image_digest).as_bytes())
+/// Physical-resource identity of THIS eval host, bound into the incarnation so a run/incarnation is
+/// tied to the exact dedicated server + boot generation + chokepoint it was authorized on (Phase 2,
+/// Codex must-fix #5). This binds evidence identity, but DOES NOT itself fence a provider reset:
+/// the off-host allocator/actuator must separately pin resource IDs and the allocation generation.
+fn physical_identity() -> anyhow::Result<String> {
+    if cfg!(target_os = "macos") && std::env::var_os("DS_SERVER_NUMBER").is_none() && std::env::var_os("DS_CHOKEPOINT_ID").is_none() {
+        return Ok(String::new());
+    }
+    let server = std::env::var("DS_SERVER_NUMBER").context("DS_SERVER_NUMBER required on the dedicated host")?;
+    let choke = std::env::var("DS_CHOKEPOINT_ID").context("DS_CHOKEPOINT_ID required on the dedicated host")?;
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").context("host boot_id unavailable")?;
+    physical_identity_parts(&server, &choke, boot.trim())
+}
+
+fn physical_identity_parts(server: &str, choke: &str, boot: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(server.parse::<u64>().is_ok_and(|n| n > 0) && choke.parse::<u64>().is_ok_and(|n| n > 0), "physical resource IDs must be positive integers");
+    anyhow::ensure!(boot.len() == 36 && boot.bytes().enumerate().all(|(i, b)| if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b.is_ascii_hexdigit() }), "invalid host boot_id");
+    Ok(serde_json::to_string(&(server, choke, boot))?)
+}
+
+fn incarnation_of(instance: &str, obs: &Vm2Obs) -> anyhow::Result<String> {
+    Ok(sha256_hex(format!("{}|{}|{}|{}|{}", instance, obs.started_at.unwrap_or(0), obs.template_digest, obs.base_image_digest, physical_identity()?).as_bytes()))
 }
 
 /// stop -f, delete, confirm. Returns latency. Confirmation requires the recorded VMM pid to be gone
@@ -528,8 +548,10 @@ async fn post_log(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body::B
 async fn post_defender(State(app): State<Arc<App>>, h: HeaderMap, Json(a): Json<DefenderAction>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_token(&app, &h)?;
     app.evidence_append("defender_action", serde_json::to_value(&a).unwrap());
-    let body = serde_json::json!({"run_id": app.run_id, "incarnation": app.incarnation, "action": a});
-    let r = app.http.post(format!("{}/defender", app.controller)).json(&body).send().await;
+    // Phase 2: SIGN the relay (controller↔hostd crosses a network) so the controller only accepts
+    // authority-reducing actions from the real per-run hostd key.
+    let rep = DefenderReport { v: PROTO_V, kind: "defender_report".into(), run_id: app.run_id.clone(), aud: AUD_CONTROLLER.into(), incarnation: app.incarnation.clone(), issued_at: now_unix(), request_id: random_hex(32), action: a };
+    let r = app.http.post(format!("{}/defender", app.controller)).json(&app.signed(&rep)).send().await;
     match r {
         Ok(resp) if resp.status().is_success() => Ok(Json(serde_json::json!({"ok": true}))),
         Ok(resp) => Err((StatusCode::BAD_GATEWAY, format!("controller: {}", resp.status()))),
@@ -752,8 +774,10 @@ async fn renew_lease(app: &App) {
 }
 
 async fn answer_challenge(app: &App, template_digest: &str, base_digest: &str) {
-    let body = serde_json::json!({"run_id": app.run_id, "incarnation": app.incarnation});
-    let ch = match app.http.post(format!("{}/challenge", app.controller)).json(&body).send().await {
+    // Phase 2: SIGN the challenge request so an on-net party cannot flood /challenge to churn nonces
+    // and force missed-challenge trips of a healthy run.
+    let req = ChallengeRequest { v: PROTO_V, kind: "challenge_request".into(), run_id: app.run_id.clone(), aud: AUD_CONTROLLER.into(), incarnation: app.incarnation.clone(), issued_at: now_unix(), request_id: random_hex(32) };
+    let ch = match app.http.post(format!("{}/challenge", app.controller)).json(&app.signed(&req)).send().await {
         Ok(r) if r.status().is_success() => r.json::<Signed>().await.ok(),
         Ok(r) => {
             let st = r.status();
@@ -934,13 +958,9 @@ impl AsyncWrite for CappedStream {
 fn keygen() -> anyhow::Result<()> {
     let p = Path::new(STATE_DIR).join("keys/hostd.key");
     std::fs::create_dir_all(p.parent().unwrap())?;
-    let k = if p.exists() { key_from_hex(&std::fs::read_to_string(&p)?)? } else {
-        let k = SigningKey::generate(&mut rand::rngs::OsRng);
-        std::fs::write(&p, hex::encode(k.to_bytes()))?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
-        k
-    };
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(p.parent().unwrap(), std::fs::Permissions::from_mode(0o700))?;
+    let k = load_or_create_signing_key(&p)?;
     println!("{}", pubkey_hex(&k));
     Ok(())
 }
@@ -993,7 +1013,7 @@ impl RunLock {
         const LOCK_EX: i32 = 2;
         const LOCK_NB: i32 = 4;
         let path = Path::new(STATE_DIR).join("run.lock");
-        let mut file = std::fs::OpenOptions::new().create(true).read(true).write(true).open(&path)?;
+        let mut file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path)?;
         let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
         anyhow::ensure!(rc == 0, "another run holds the host gate; one run per host");
         let _ = file.set_len(0);
@@ -1194,7 +1214,7 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
     let obs = observe_vm2(&instance, &template_digest, &base_digest);
     inst_guard.pid = obs.pid;
     anyhow::ensure!(obs.running == Some(true), "VM2 not observed running after start: {obs:?}");
-    let incarnation = incarnation_of(&instance, &obs);
+    let incarnation = incarnation_of(&instance, &obs)?;
 
     let record = HostRunRecord { run_id: run_id.clone(), instance: instance.clone(), incarnation: incarnation.clone(), state: HostRunState::Starting, vz_pid: obs.pid, lease_high_water: 0, lease_wall_deadline: 0, epoch: 0, reasons: vec![], destroy_latency_ms: None };
     atomic_write_json(&record_path, &record)?;
@@ -1208,7 +1228,7 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
         controller_pk,
         model,
         ollama,
-        http: reqwest::Client::builder().timeout(Duration::from_secs(5)).build()?,
+        http: reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(5)).build()?,
         record_path: record_path.clone(),
         evidence: evidence::EvidenceStore::new(Path::new(STATE_DIR).join("evidence").join(format!("{run_id}.jsonl")), EVIDENCE_QUOTA_BYTES),
         live: Mutex::new(Live { deadline: None, last_lease_at: None, lease_signed: None, gate: GateState::Sealed, last_report: None, report_seq: 0, prestage_done: false, log_seq_expected: 0, log_tokens: LOG_RATE_PER_S as f64, log_last: Instant::now(), log_dropped: 0, chokepoint: ChokepointObs::default(), destroy_reason: None }),
@@ -1363,7 +1383,9 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?)).init();
     anyhow::ensure!(unsafe { libc_geteuid() } == 0, "hostd must run as root (sudo -n /usr/local/sbin/deadswitch-hostd ...)");
     std::fs::create_dir_all(STATE_DIR)?;
-    match Args::parse().cmd {
+    let cmd = Args::parse().cmd;
+    anyhow::ensure!(cfg!(target_os = "macos") || matches!(cmd, Cmd::Keygen), "Linux VM2 lifecycle/nft observation backend is not implemented; refusing to run the Mac profile on Linux");
+    match cmd {
         Cmd::Keygen => keygen(),
         Cmd::Gate { state } => {
             let s = match state.as_str() { "open" => GateState::Open, "sealed" => GateState::Sealed, "cut" => GateState::Cut, _ => anyhow::bail!("open|sealed|cut") };
@@ -1384,4 +1406,24 @@ extern "C" {
     fn libc_geteuid() -> u32;
     #[link_name = "flock"]
     fn flock(fd: i32, operation: i32) -> i32;
+}
+
+#[cfg(test)]
+mod physical_identity_tests {
+    use super::*;
+
+    #[test]
+    fn physical_identity_requires_all_components_and_changes_with_each_resource() {
+        let boot = "11111111-2222-3333-4444-555555555555";
+        let identity = physical_identity_parts("123", "456", boot).unwrap();
+        for (server, choke, generation) in [
+            ("124", "456", boot), ("123", "457", boot),
+            ("123", "456", "11111111-2222-3333-4444-555555555556"),
+        ] {
+            assert_ne!(physical_identity_parts(server, choke, generation).unwrap(), identity);
+        }
+        for (server, choke, generation) in [("", "456", boot), ("123", "0", boot), ("123", "456", ""), ("123", "456", "not-a-boot-id")] {
+            assert!(physical_identity_parts(server, choke, generation).is_err());
+        }
+    }
 }
