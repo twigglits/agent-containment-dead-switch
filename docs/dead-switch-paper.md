@@ -182,7 +182,8 @@ The system separates three functions that are usually, dangerously, conflated:
 **evidence/measurement** → **authorization** → **enforcement/termination**. Evidence never authorizes
 itself; authorization is a lease, not an integrity proof; enforcement lives where the adversary
 cannot reach it. (Diagram source: [`dead-switch-architecture.mmd`](../dead-switch-architecture.mmd);
-rendered: [`dead-switch-architecture.png`](../dead-switch-architecture.png).)
+rendered: [`dead-switch-architecture.png`](../dead-switch-architecture.png). An animated
+walkthrough of the containment ladder described in §4.1–§4.4 is [`assets/dead-switch.svg`](../assets/dead-switch.svg).)
 
 ```mermaid
 flowchart TB

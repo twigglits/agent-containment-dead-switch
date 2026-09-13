@@ -1,5 +1,9 @@
 # agent-containment-dead-switch
 
+<p align="center">
+  <img src="assets/dead-switch.svg" width="900" height="500" alt="Animated walkthrough of the dead-switch: an AI agent inside nested VM1 makes one mediated inference call through the exact-action gateway and the deletable chokepoint; its raw egress attempt is blocked at the host gate (rung 0); it escapes into the supervisor VM2, whose forged heartbeat the off-host controller rejects (rung 1); the host goes silent, the run lease expires, and the off-host actuator deletes the chokepoint so egress fails closed and hardware-resets the host (rung 2), reporting the reset as unconfirmed and quarantining the allocation.">
+</p>
+
 A reference architecture — and a working implementation — for a **fail-closed dead-switch** that
 contains an autonomous AI agent during cyber-capability evaluations, even if the agent fully
 compromises its sandbox and the supervisory VM above it. Motivated by the July 2026 OpenAI–Hugging
@@ -21,6 +25,7 @@ Face evaluation-security incident, whose report is transcribed in
 | [`harness/`](harness) | Python VM1 agent harness + regression tests |
 | [`infra/`](infra) | Lima/pf (Mac), QEMU VM1 image, Hetzner scripts, Terraform (Cloud pieces only) |
 | [`tests/`](tests) | Phase 1 trusted-side acceptance; Phase 2 offline + live skeleton |
+| [`assets/dead-switch.svg`](assets/dead-switch.svg) | Self-animating (CSS-only) walkthrough of the containment ladder, embedded above |
 | [`JEAN_SUGGESTIONS.md`](JEAN_SUGGESTIONS.md) | Original safeguard ideas that seeded the design (package pre-staging, isolated grading) |
 
 ## Status (2026-09-13)

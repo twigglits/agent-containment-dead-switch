@@ -1,0 +1,223 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="500" viewBox="0 0 900 500" role="img" aria-label="Animated walkthrough of the agent-containment dead-switch: an AI agent inside nested VM1 makes one mediated inference call, then tries to reach the internet and is blocked at the host gate; it escapes into the supervisor VM2, whose forged heartbeat the off-host controller rejects; the host goes silent, the run lease expires, and the off-host actuator deletes the egress chokepoint and hardware-resets the host, reporting the reset as unconfirmed and quarantining the allocation.">
+  <title>agent-containment-dead-switch: mediated inference → egress blocked → VM2 compromised → forged heartbeat rejected → lease expired → chokepoint deleted + hardware reset → quarantined</title>
+  <defs>
+    <radialGradient id="tripglow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff5f56" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#ff5f56" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="8"/></filter>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+  <style>
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+    .scene *{animation-duration:26s;animation-iteration-count:infinite;animation-fill-mode:both}
+
+    /* ---- event log (left): typewriter reveal = clip-path window + opacity gate ---- */
+    .l1{animation-name:l1}.l2{animation-name:l2}.l3{animation-name:l3}.l4{animation-name:l4}.l5{animation-name:l5}
+    .l6{animation-name:l6}.l7{animation-name:l7}.l8{animation-name:l8}.l9{animation-name:l9}
+    @keyframes l1{0%,1.9%{opacity:0;clip-path:inset(0 100% 0 0)}2%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(38,end)}7%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l2{0%,8.9%{opacity:0;clip-path:inset(0 100% 0 0)}9%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(38,end)}14%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l3{0%,17.9%{opacity:0;clip-path:inset(0 100% 0 0)}18%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(38,end)}23%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l4{0%,26.9%{opacity:0;clip-path:inset(0 100% 0 0)}27%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(38,end)}32%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l5{0%,34.9%{opacity:0;clip-path:inset(0 100% 0 0)}35%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(38,end)}40%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l6{0%,43.9%{opacity:0;clip-path:inset(0 100% 0 0)}44%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(38,end)}50%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l7{0%,55.9%{opacity:0;clip-path:inset(0 100% 0 0)}56%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(38,end)}61%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l8{0%,64.9%{opacity:0;clip-path:inset(0 100% 0 0)}65%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(40,end)}71%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l9{0%,76.9%{opacity:0}77%,82%{opacity:1}84%{opacity:.2}86%{opacity:1}100%{opacity:1}}
+
+    /* ---- lease bar drains when the host goes silent, turns red on expiry ---- */
+    .lease{animation-name:lease;transform-box:fill-box;transform-origin:left center}
+    @keyframes lease{0%,43%{transform:scaleX(1);fill:#3fb950}50%,100%{transform:scaleX(0);fill:#ff5f56}}
+    .leaseTxt{animation-name:leaseTxt}
+    @keyframes leaseTxt{0%,49.9%{opacity:1}50%,100%{opacity:0}}
+    .expired{animation-name:expired}
+    @keyframes expired{0%,49.9%{opacity:0}50%,100%{opacity:1}}
+    .tripGlow{animation-name:tripGlow}
+    @keyframes tripGlow{0%,49.9%{opacity:0}51%{opacity:1}54%{opacity:.2}57%{opacity:1}62%,100%{opacity:0}}
+    .ctlBox{animation-name:ctlBox}
+    @keyframes ctlBox{0%,49.9%{stroke:#30363d}50%,100%{stroke:#ff5f56}}
+
+    /* ---- healthy heartbeats: host → controller, one every ~1.3 s, until the host goes silent ---- */
+    .hb{animation-name:hb;opacity:0}
+    @keyframes hb{
+      0%{opacity:1;transform:translate(0px,0px)}3%{opacity:1;transform:translate(78px,-40px)}3.2%{opacity:0}
+      5%{opacity:1;transform:translate(0px,0px)}8%{opacity:1;transform:translate(78px,-40px)}8.2%{opacity:0}
+      10%{opacity:1;transform:translate(0px,0px)}13%{opacity:1;transform:translate(78px,-40px)}13.2%{opacity:0}
+      15%{opacity:1;transform:translate(0px,0px)}18%{opacity:1;transform:translate(78px,-40px)}18.2%{opacity:0}
+      20%{opacity:1;transform:translate(0px,0px)}23%{opacity:1;transform:translate(78px,-40px)}23.2%{opacity:0}
+      25%{opacity:1;transform:translate(0px,0px)}28%{opacity:1;transform:translate(78px,-40px)}28.2%{opacity:0}
+      30%{opacity:1;transform:translate(0px,0px)}33%{opacity:1;transform:translate(78px,-40px)}33.2%{opacity:0}
+      33.3%,100%{opacity:0;transform:translate(0px,0px)}}
+
+    /* ---- inference packet: VM1 → gateway → gate → chokepoint → services, and back (green) ---- */
+    .inf{animation-name:inf;opacity:0}
+    @keyframes inf{
+      0%,8.9%{opacity:0;transform:translate(0px,0px)}9%{opacity:1;transform:translate(0px,0px)}
+      10%{transform:translate(0px,-96px)}11.2%{transform:translate(95px,-96px)}12.6%{transform:translate(210px,-96px)}13.8%{opacity:1;transform:translate(360px,-96px)}
+      14%{opacity:0;transform:translate(360px,-96px)}14.2%{opacity:1;fill:#3fb950}
+      15.4%{transform:translate(210px,-96px)}16.6%{transform:translate(95px,-96px)}17.6%{transform:translate(0px,-96px)}18.4%{opacity:1;transform:translate(0px,0px)}18.6%,100%{opacity:0;transform:translate(0px,0px)}}
+
+    /* ---- rung 0: VM1 tries a raw egress; dies at the gate ---- */
+    .esc{animation-name:esc;opacity:0}
+    @keyframes esc{0%,18.9%{opacity:0;transform:translate(0px,0px)}19%{opacity:1;transform:translate(0px,0px)}20.5%{transform:translate(0px,-96px)}22%{opacity:1;transform:translate(93px,-96px)}22.5%,100%{opacity:0;transform:translate(93px,-96px)}}
+    .gateX{animation-name:gateX}
+    @keyframes gateX{0%,21.9%{opacity:0}22%{opacity:1}26%{opacity:1}27%,100%{opacity:0}}
+    .gateBox{animation-name:gateBox}
+    @keyframes gateBox{0%,21.9%{stroke:#3fb950}22%,26%{stroke:#ff5f56}27%,100%{stroke:#3fb950}}
+
+    /* ---- rung 1: VM1 breaks out, VM2 compromised; forged heartbeat rejected ---- */
+    .vm1Box{animation-name:vm1Box}
+    @keyframes vm1Box{0%,26.9%{stroke:#8b949e;stroke-dasharray:0 0}27%,100%{stroke:#ff7b72;stroke-dasharray:6 5}}
+    .vm2Box{animation-name:vm2Box}
+    @keyframes vm2Box{0%,28.9%{stroke:#8b949e}29%,100%{stroke:#d29922}}
+    .breach{animation-name:breach;opacity:0}
+    @keyframes breach{0%,27.9%{opacity:0}28%,100%{opacity:1}}
+    .forged{animation-name:forged;opacity:0}
+    @keyframes forged{0%,35.9%{opacity:0;transform:translate(0px,0px)}36%{opacity:1;transform:translate(0px,0px)}39.5%{opacity:1;transform:translate(78px,-40px)}40%,100%{opacity:0;transform:translate(78px,-40px)}}
+    .rejX{animation-name:rejX}
+    @keyframes rejX{0%,39.4%{opacity:0}39.5%,43%{opacity:1}44%,100%{opacity:0}}
+    .rejTxt{animation-name:rejTxt}
+    @keyframes rejTxt{0%,39.4%{opacity:0}39.5%,48%{opacity:1}49%,100%{opacity:0}}
+
+    /* ---- rung 2: host silent, lease expires, off-host actuator fires ---- */
+    .hostBox{animation-name:hostBox}
+    @keyframes hostBox{0%,43.9%{stroke:#8b949e;fill:#161b22}44%,64%{stroke:#6e7681;fill:#0f1319}65%,100%{stroke:#ff5f56;fill:#0a0d12}}
+    .silent{animation-name:silent;opacity:0}
+    @keyframes silent{0%,43.9%{opacity:0}44%,63%{opacity:1}64%,100%{opacity:0}}
+    .choke{animation-name:choke;transform-box:fill-box;transform-origin:center}
+    @keyframes choke{0%,56%{opacity:1;transform:scale(1);stroke:#8b949e}57%{stroke:#ff5f56}60%{opacity:1;transform:scale(1.06)}62%,100%{opacity:0;transform:scale(.5)}}
+    .link{animation-name:link}
+    @keyframes link{0%,59.9%{opacity:1}62%,100%{opacity:0}}
+    .deleted{animation-name:deleted;opacity:0}
+    @keyframes deleted{0%,61.9%{opacity:0}62%,100%{opacity:1}}
+    .bolt{animation-name:bolt;opacity:0}
+    @keyframes bolt{0%,64.9%{opacity:0}65%{opacity:1}66.5%{opacity:.2}68%{opacity:1}70%,100%{opacity:0}}
+    .guests{animation-name:guests;transform-box:fill-box;transform-origin:center}
+    @keyframes guests{0%,65.9%{opacity:1;transform:scale(1)}70%,100%{opacity:.18;transform:scale(.9)}}
+    .reset{animation-name:reset;opacity:0}
+    @keyframes reset{0%,65.9%{opacity:0}66%,100%{opacity:1}}
+    .quar{animation-name:quar;opacity:0}
+    @keyframes quar{0%,71.9%{opacity:0}72%,100%{opacity:1}}
+
+    /* whole scene fades out at the end of each loop */
+    .scene{animation:scene 26s linear infinite both}
+    @keyframes scene{0%,93%{opacity:1}99%,100%{opacity:0}}
+
+    /* reduced motion: show the finished, contained state statically */
+    @media (prefers-reduced-motion: reduce){
+      .scene,.scene *{animation:none!important}
+      .hb,.inf,.esc,.gateX,.forged,.rejX,.rejTxt,.silent,.choke,.link,.bolt,.tripGlow,.leaseTxt{opacity:0!important}
+      .breach,.deleted,.reset,.quar,.expired{opacity:1!important}
+      .guests{opacity:.18}.lease{transform:scaleX(0);fill:#ff5f56}
+      .vm1Box{stroke:#ff7b72;stroke-dasharray:6 5}.vm2Box{stroke:#d29922}.hostBox{stroke:#ff5f56;fill:#0a0d12}.ctlBox{stroke:#ff5f56}
+    }
+  </style>
+
+  <!-- terminal card -->
+  <rect x="1" y="1" width="898" height="498" rx="12" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+  <circle cx="26" cy="26" r="6" fill="#ff5f56"/>
+  <circle cx="48" cy="26" r="6" fill="#ffbd2e"/>
+  <circle cx="70" cy="26" r="6" fill="#27c93f"/>
+  <text class="mono" x="450" y="31" font-size="13" fill="#8b949e" text-anchor="middle">agent-containment-dead-switch · fail-closed containment, host-independent kill</text>
+  <line x1="1" y1="48" x2="899" y2="48" stroke="#30363d" stroke-width="1"/>
+
+  <g class="scene">
+    <!-- ===== event log (left column) ===== -->
+    <text class="mono l1" x="30" y="92"  font-size="12.5" fill="#e6edf3"><tspan fill="#7ee787">» </tspan>prestage ▸ deps RO · SEALED · epoch 1</text>
+    <text class="mono l2" x="30" y="132" font-size="12.5" fill="#7ee787">inference ▸ exact-action ▸ chokepoint ✓</text>
+    <text class="mono l3" x="30" y="172" font-size="12.5" fill="#ff7b72">rung 0 ▸ VM1 egress ▸ BLOCKED @ gate</text>
+    <text class="mono l4" x="30" y="212" font-size="12.5" fill="#d29922">rung 1 ▸ VM1 escape → VM2 compromised</text>
+    <text class="mono l5" x="30" y="252" font-size="12.5" fill="#d29922">heartbeat ▸ forged ▸ REJECTED (sig)</text>
+    <text class="mono l6" x="30" y="292" font-size="12.5" fill="#ff7b72">rung 2 ▸ host silent ▸ lease EXPIRED</text>
+    <text class="mono l7" x="30" y="332" font-size="12.5" fill="#a371f7">kill A ▸ delete chokepoint ▸ CLOSED</text>
+    <text class="mono l8" x="30" y="372" font-size="12.5" fill="#a371f7">kill B ▸ hw reset ▸ UNCONFIRMED</text>
+    <text class="mono l9" x="30" y="422" font-size="15" fill="#7ee787" font-weight="bold">[ contained ▸ 3.2 s &lt; 25 s bound ]</text>
+    <text class="mono" x="30" y="452" font-size="11" fill="#6e7681">absence of a valid signal = the trigger;</text>
+    <text class="mono" x="30" y="467" font-size="11" fill="#6e7681">never a self-reported "healthy"</text>
+
+    <!-- ===== off-host controller (top right) ===== -->
+    <circle class="tripGlow" cx="715" cy="104" r="120" fill="url(#tripglow)" filter="url(#blur)"/>
+    <rect class="ctlBox" x="560" y="64" width="312" height="80" rx="8" fill="#161b22" stroke="#30363d" stroke-width="2"/>
+    <text class="mono" x="716" y="86" font-size="12" fill="#e6edf3" text-anchor="middle">off-host controller · separate machine</text>
+    <rect x="580" y="98" width="200" height="10" rx="3" fill="#21262d"/>
+    <rect class="lease" x="580" y="98" width="200" height="10" rx="3" fill="#3fb950"/>
+    <text class="mono leaseTxt" x="790" y="107" font-size="11" fill="#8b949e">lease TTL</text>
+    <text class="mono expired" x="790" y="107" font-size="11" fill="#ff5f56" font-weight="bold">EXPIRED</text>
+    <text class="mono" x="716" y="132" font-size="10" fill="#8b949e" text-anchor="middle">signed · fenced · dual-clock · revocation persists</text>
+
+    <!-- heartbeat lane: host (540,190) → controller (618,150) -->
+    <line x1="540" y1="190" x2="618" y2="150" stroke="#30363d" stroke-width="1.5" stroke-dasharray="3 4"/>
+    <circle class="hb" cx="540" cy="190" r="4.5" fill="#3fb950"/>
+    <circle class="forged" cx="540" cy="190" r="5" fill="#d29922"/>
+    <g class="rejX" stroke="#ff5f56" stroke-width="3" stroke-linecap="round">
+      <line x1="611" y1="143" x2="625" y2="157"/><line x1="625" y1="143" x2="611" y2="157"/>
+    </g>
+    <text class="mono rejTxt" x="632" y="171" font-size="11" fill="#ff7b72">forged evidence ✕ sig/nonce</text>
+
+    <!-- ===== evaluation host with nested VM2 → VM1 ===== -->
+    <rect class="hostBox" x="360" y="176" width="190" height="300" rx="8" fill="#161b22" stroke="#8b949e" stroke-width="2"/>
+    <text class="mono" x="455" y="196" font-size="12" fill="#e6edf3" text-anchor="middle">evaluation host</text>
+    <text class="mono" x="455" y="209" font-size="9.5" fill="#8b949e" text-anchor="middle">trusted for isolation</text>
+    <text class="mono silent" x="455" y="223" font-size="10" fill="#ff7b72" text-anchor="middle" font-weight="bold">⚠ silent · no renewal</text>
+
+    <g class="guests">
+      <rect class="vm2Box" x="376" y="232" width="158" height="234" rx="7" fill="#0d1117" stroke="#8b949e" stroke-width="1.5"/>
+      <text class="mono" x="455" y="250" font-size="11.5" fill="#e6edf3" text-anchor="middle">VM2 · supervisor</text>
+      <text class="mono breach" x="455" y="263" font-size="10" fill="#d29922" text-anchor="middle" font-weight="bold">compromised</text>
+      <rect x="390" y="270" width="130" height="34" rx="5" fill="#161b22" stroke="#30363d"/>
+      <text class="mono" x="455" y="284" font-size="10" fill="#8b949e" text-anchor="middle">exact-action gateway</text>
+      <text class="mono" x="455" y="297" font-size="9" fill="#8b949e" text-anchor="middle">defender · bounded authority</text>
+
+      <rect class="vm1Box" x="392" y="318" width="126" height="138" rx="7" fill="#0b0f14" stroke="#8b949e" stroke-width="1.5"/>
+      <text class="mono" x="455" y="336" font-size="11.5" fill="#e6edf3" text-anchor="middle">VM1 · agent</text>
+      <text class="mono" x="455" y="349" font-size="8.5" fill="#8b949e" text-anchor="middle">no nested-virt · deps RO</text>
+      <!-- agent glyph -->
+      <rect x="431" y="362" width="48" height="40" rx="8" fill="#1f2937" stroke="#a371f7" stroke-width="1.5"/>
+      <circle cx="446" cy="378" r="4" fill="#a371f7"/><circle cx="464" cy="378" r="4" fill="#a371f7"/>
+      <path d="M444,392 Q455,398 466,392" stroke="#a371f7" stroke-width="2" fill="none" stroke-linecap="round"/>
+      <line x1="455" y1="356" x2="455" y2="362" stroke="#a371f7" stroke-width="2"/><circle cx="455" cy="354" r="2.5" fill="#a371f7"/>
+      <text class="mono" x="455" y="420" font-size="8.5" fill="#8b949e" text-anchor="middle">model + harness + browser</text>
+      <text class="mono" x="455" y="445" font-size="9.5" fill="#6e7681" text-anchor="middle">cannot outlive VM2</text>
+    </g>
+
+    <!-- host-independent kill B: reset bolt controller → host -->
+    <path class="bolt" d="M600,146 L575,178 L590,178 L562,214" stroke="#ff5f56" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text class="mono reset" x="580" y="446" font-size="10.5" fill="#ff7b72">⟲ hw reset (out-of-band) · guests die with host</text>
+    <text class="mono quar" x="580" y="464" font-size="10.5" fill="#d29922" font-weight="bold">termination UNCONFIRMED → allocation QUARANTINED</text>
+    <text class="mono quar" x="580" y="479" font-size="10" fill="#8b949e">no observer proves the reset · never auto-repeated</text>
+
+    <!-- ===== egress path: gate → chokepoint → approved services ===== -->
+    <rect class="gateBox" x="539" y="266" width="22" height="46" rx="4" fill="#0b0f14" stroke="#3fb950" stroke-width="2"/>
+    <line x1="550" y1="272" x2="550" y2="306" stroke="#3fb950" stroke-width="2" stroke-dasharray="4 3"/>
+    <text class="mono" x="550" y="326" font-size="9.5" fill="#8b949e" text-anchor="middle">gate</text>
+    <text class="mono" x="550" y="337" font-size="8.5" fill="#6e7681" text-anchor="middle">pf / nft</text>
+    <g class="gateX" stroke="#ff5f56" stroke-width="3.5" stroke-linecap="round">
+      <line x1="541" y1="280" x2="559" y2="298"/><line x1="559" y1="280" x2="541" y2="298"/>
+    </g>
+
+    <line class="link" x1="561" y1="289" x2="600" y2="289" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+    <g class="choke">
+      <rect x="601" y="266" width="130" height="46" rx="7" fill="#161b22" stroke="#8b949e" stroke-width="2"/>
+      <text class="mono" x="666" y="285" font-size="11.5" fill="#e6edf3" text-anchor="middle">chokepoint</text>
+      <text class="mono" x="666" y="300" font-size="9.5" fill="#8b949e" text-anchor="middle">deletable · no NAT</text>
+    </g>
+    <text class="mono deleted" x="666" y="290" font-size="12" fill="#ff5f56" text-anchor="middle" font-weight="bold">✕ DELETED</text>
+    <text class="mono deleted" x="666" y="304" font-size="9.5" fill="#ff7b72" text-anchor="middle">no next hop · blackhole</text>
+    <line class="link" x1="731" y1="289" x2="760" y2="289" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+    <rect x="761" y="266" width="111" height="46" rx="7" fill="#161b22" stroke="#30363d" stroke-width="2"/>
+    <text class="mono" x="816" y="285" font-size="11" fill="#e6edf3" text-anchor="middle">pinned inference</text>
+    <text class="mono" x="816" y="300" font-size="9.5" fill="#8b949e" text-anchor="middle">approved only</text>
+    <text class="mono" x="716" y="356" font-size="10" fill="#6e7681" text-anchor="middle">no public route · no DNS · no metadata · no NAT fallback</text>
+
+    <!-- ===== rungs legend (right, below path) ===== -->
+    <text class="mono" x="580" y="392" font-size="10.5" fill="#8b949e">rung 0 · gate blocks raw egress</text>
+    <text class="mono" x="580" y="408" font-size="10.5" fill="#8b949e">rung 1 · forged host evidence rejected → trip</text>
+    <text class="mono" x="580" y="424" font-size="10.5" fill="#8b949e">rung 2 · no renewal ⇒ off-host kill, no host help</text>
+
+    <!-- ===== moving packets (origin: agent inside VM1 at 455,385) ===== -->
+    <circle class="inf" cx="455" cy="385" r="5" fill="#3fb950"/>
+    <circle class="esc" cx="455" cy="385" r="5" fill="#ff5f56"/>
+  </g>
+</svg>
