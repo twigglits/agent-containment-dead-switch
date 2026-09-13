@@ -386,7 +386,10 @@ impl GradingService {
                 .claims
                 .get_mut(&pending.submission_digest)
                 .context("result release barrier without a consumed claim")?;
-            ensure!(claim.job.job_id == pending.job_id, "result release barrier identity mismatch");
+            ensure!(
+                claim.job.job_id == pending.job_id,
+                "result release barrier identity mismatch"
+            );
             claim.state = JobState::Abandoned;
             claim.result = None;
             changed = true;
@@ -904,7 +907,13 @@ impl GradingService {
     }
 
     fn commit_result(&self, run: &RunRecord, signed: &Signed, now: u64) -> anyhow::Result<()> {
-        self.commit_result_with_persistence(run, signed, now, |next| self.save_ledger(next), now_unix)
+        self.commit_result_with_persistence(
+            run,
+            signed,
+            now,
+            |next| self.save_ledger(next),
+            now_unix,
+        )
     }
 
     /// Clock/persistence injection keeps the fsync-expiry boundary deterministically testable.
@@ -990,9 +999,15 @@ impl GradingService {
             && release_now >= next.wall_high_water
             && claim.job.fencing_token == ledger.high_water
             && verify_result(signed, &key, &claim.job, release_now).is_ok()
-            && self.deadlines.lock().unwrap().get(&claim.job.job_id).is_some_and(|deadline| {
-                deadline.fencing_token == claim.job.fencing_token && !deadline.expired(release_now)
-            });
+            && self
+                .deadlines
+                .lock()
+                .unwrap()
+                .get(&claim.job.job_id)
+                .is_some_and(|deadline| {
+                    deadline.fencing_token == claim.job.fencing_token
+                        && !deadline.expired(release_now)
+                });
         if !releasable {
             let claim = next.claims.get_mut(&hint.submission_digest).unwrap();
             claim.state = JobState::Abandoned;

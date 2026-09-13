@@ -509,6 +509,160 @@ fn controller_result_commit_honors_monotonic_expiry_even_if_wall_rolls_back() {
 }
 
 #[test]
+fn result_authority_is_rechecked_after_slow_persistence_before_operator_visibility() {
+    // Advance each authority boundary only AFTER the candidate is fsynced. This models a slow
+    // fsync deterministically, without relying on filesystem latency or short real-time sleeps.
+    for boundary in ["wall", "monotonic", "fencing"] {
+        let f = Fixture::new();
+        let service = f.init(1);
+        let r = run("r");
+        store(&service, &r, b"submission");
+        let r = stopped(r);
+        let job = service
+            .claim(&r, &request("campaign", "key1"), now_unix())
+            .unwrap()
+            .job;
+        let signed = Signed::sign(&f.scorer, "scorer", &result(&job, Score::Correct));
+        let release_now = if boundary == "wall" {
+            job.expires_at
+        } else {
+            now_unix()
+        };
+        let mut writes = 0;
+        let committed = service.commit_result_with_persistence(
+            &r,
+            &signed,
+            now_unix(),
+            |next| {
+                let barrier: PendingRelease =
+                    load_private(&service.dir.join("pending-release.json"))?;
+                assert_eq!(barrier.job_id, job.job_id);
+                assert_eq!(barrier.submission_digest, job.submission_digest);
+                service.save_ledger(next)?;
+                writes += 1;
+                if writes == 1 {
+                    assert_eq!(
+                        next.claims[&job.submission_digest].state,
+                        JobState::ResultCommitted
+                    );
+                    let mut deadlines = service.deadlines.lock().unwrap();
+                    let deadline = deadlines.get_mut(&job.job_id).unwrap();
+                    match boundary {
+                        "monotonic" => deadline.mono = Instant::now(),
+                        "fencing" => deadline.fencing_token += 1,
+                        _ => {}
+                    }
+                }
+                Ok(())
+            },
+            || release_now,
+        );
+        assert!(committed.is_err(), "{boundary}");
+        assert_eq!(writes, 2, "candidate then terminal tombstone");
+        assert!(!service.dir.join("pending-release.json").exists());
+        let disk: GradingLedger = load_private(&service.dir.join("ledger.json")).unwrap();
+        for ledger in [&disk, &*service.ledger.lock().unwrap()] {
+            assert_eq!(
+                ledger.claims[&job.submission_digest].state,
+                JobState::Abandoned
+            );
+            assert!(ledger.claims[&job.submission_digest].result.is_none());
+            assert_eq!(ledger.spent, 1);
+            assert_eq!(ledger.high_water, 1);
+        }
+        drop(service);
+        let reopened = f.reopen();
+        assert!(
+            reopened.ledger.lock().unwrap().claims[&job.submission_digest]
+                .result
+                .is_none()
+        );
+        assert_eq!(reopened.ledger.lock().unwrap().spent, 1);
+    }
+}
+
+#[test]
+fn uncertain_late_result_tombstone_remains_withheld_after_restart() {
+    let f = Fixture::new();
+    let service = f.init(1);
+    let r = run("r");
+    store(&service, &r, b"submission");
+    let r = stopped(r);
+    let job = service
+        .claim(&r, &request("campaign", "key1"), now_unix())
+        .unwrap()
+        .job;
+    let signed = Signed::sign(&f.scorer, "scorer", &result(&job, Score::Correct));
+    let mut writes = 0;
+    assert!(service
+        .commit_result_with_persistence(
+            &r,
+            &signed,
+            now_unix(),
+            |next| {
+                writes += 1;
+                if writes == 2 {
+                    anyhow::bail!("simulated tombstone fsync failure");
+                }
+                service.save_ledger(next)
+            },
+            || job.expires_at,
+        )
+        .is_err());
+    assert!(service.grading_poisoned.load(Ordering::SeqCst));
+    assert!(
+        service.ledger.lock().unwrap().claims[&job.submission_digest]
+            .result
+            .is_none()
+    );
+    let disk: GradingLedger = load_private(&service.dir.join("ledger.json")).unwrap();
+    assert_eq!(
+        disk.claims[&job.submission_digest].state,
+        JobState::ResultCommitted
+    );
+    assert!(service.dir.join("pending-release.json").exists());
+    drop(service);
+    let reopened = f.reopen();
+    let recovered: GradingLedger = load_private(&reopened.dir.join("ledger.json")).unwrap();
+    assert_eq!(
+        recovered.claims[&job.submission_digest].state,
+        JobState::Abandoned
+    );
+    assert!(recovered.claims[&job.submission_digest].result.is_none());
+    assert_eq!(recovered.spent, 1);
+    assert_eq!(recovered.high_water, 1);
+    assert!(!reopened.dir.join("pending-release.json").exists());
+    assert!(reopened
+        .claim(&r, &request("different-campaign", "key2"), now_unix())
+        .is_err());
+}
+
+#[test]
+fn normal_result_release_clears_barrier_and_preserves_exact_result_on_restart() {
+    let f = Fixture::new();
+    let service = f.init(1);
+    let r = run("r");
+    store(&service, &r, b"submission");
+    let r = stopped(r);
+    let job = service
+        .claim(&r, &request("campaign", "key1"), now_unix())
+        .unwrap()
+        .job;
+    let signed = Signed::sign(&f.scorer, "scorer", &result(&job, Score::Correct));
+    service.commit_result(&r, &signed, now_unix()).unwrap();
+    assert!(!service.dir.join("pending-release.json").exists());
+    drop(service);
+    let reopened = f.reopen();
+    assert_eq!(
+        reopened.ledger.lock().unwrap().claims[&job.submission_digest]
+            .result
+            .as_ref(),
+        Some(&signed)
+    );
+    reopened.commit_result(&r, &signed, now_unix()).unwrap();
+}
+
+#[test]
 fn cas_mutation_missing_state_corruption_and_reinitialization_fail_closed() {
     let f = Fixture::new();
     let service = f.init(2);
