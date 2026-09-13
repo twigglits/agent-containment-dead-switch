@@ -1,0 +1,10 @@
+{
+  "base_image": "/opt/deadswitch-grader/base.raw",
+  "base_sha256": "REPLACE_WITH_SHA256_OF_REVIEWED_IMMUTABLE_RAW_IMAGE",
+  "sandbox_root": "/var/lib/deadswitch-grader-sandboxes",
+  "state_root": "/var/lib/deadswitch-grader-launcher",
+  "qemu_uid": 991,
+  "qemu_gid": 991,
+  "memory_mib": 256,
+  "vcpus": 1
+}

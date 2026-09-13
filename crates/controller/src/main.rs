@@ -809,13 +809,15 @@ async fn terminated(State(app): S, Json(s): Json<Signed>) -> Resp<RunRecord> {
         &format!("hostd confirmed termination in {} ms", t.latency_ms),
     )
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    r.termination_confirmed_at = Some(now_unix());
-    if r.state != RunState::Terminated {
+    let mut confirmed = r.clone();
+    confirmed.termination_confirmed_at = Some(now_unix());
+    if confirmed.state != RunState::Terminated {
         // keep the original terminal reason, but record that VM2 is gone
-        r.reasons.push("terminated (confirmed)".into());
+        confirmed.reasons.push("terminated (confirmed)".into());
     }
-    app.persist(r)
+    app.persist(&confirmed)
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    *r = confirmed;
     Ok(Json(r.clone()))
 }
 

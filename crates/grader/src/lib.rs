@@ -57,14 +57,48 @@ pub struct LaunchObservation {
     pub exited_at: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize)]
 pub struct FrozenObservation {
     #[serde(flatten)]
     pub execution: LaunchObservation,
     pub frozen: bool,
     pub captured_output_digest: String,
     pub capture_bytes: u64,
+}
+
+impl<'de> Deserialize<'de> for FrozenObservation {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Serde flatten + nested deny_unknown_fields cannot express this contract safely.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            sandbox_id: String,
+            launched_artifact_digest: String,
+            started: bool,
+            exited: bool,
+            timed_out: bool,
+            started_at: u64,
+            exited_at: u64,
+            frozen: bool,
+            captured_output_digest: String,
+            capture_bytes: u64,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            execution: LaunchObservation {
+                sandbox_id: wire.sandbox_id,
+                launched_artifact_digest: wire.launched_artifact_digest,
+                started: wire.started,
+                exited: wire.exited,
+                timed_out: wire.timed_out,
+                started_at: wire.started_at,
+                exited_at: wire.exited_at,
+            },
+            frozen: wire.frozen,
+            captured_output_digest: wire.captured_output_digest,
+            capture_bytes: wire.capture_bytes,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -155,10 +189,14 @@ impl<H: SandboxHooks, P: ResultPublisher> Processor<H, P> {
             );
             Ok(v)
         });
-        let clean = teardown.is_ok();
+        // All per-job files are discarded BEFORE signing/commit/publication. Captures and
+        // observations needed for scoring are now owned immutable values in trusted memory.
+        let local_cleanup = state::remove_job_files(ctx);
+        let clean = teardown.is_ok() && local_cleanup.is_ok();
         let result = (|| {
             let frozen = execution?;
             let destroyed = teardown?;
+            local_cleanup?;
             authority.check()?;
             ensure!(
                 destroyed.teardown_confirmed_at >= frozen.frozen_at,
@@ -209,18 +247,15 @@ impl<H: SandboxHooks, P: ResultPublisher> Processor<H, P> {
             authority.check()?;
             Ok(())
         })();
-        // Capture was frozen in trusted memory before destroy, and never goes on the wire.
-        let local_cleanup = state::remove_job_files(ctx);
-        if result.is_err() || local_cleanup.is_err() {
+        if result.is_err() {
             let mut store = self
                 .store
                 .lock()
                 .map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
             // Committed results stay immutable, including ambiguous HTTP delivery. An uncertain
             // teardown or local cleanup closes the entire service to future jobs.
-            store.abort(&ctx.job.job_id, !clean || local_cleanup.is_err())?;
+            store.abort(&ctx.job.job_id, !clean)?;
         }
-        local_cleanup?;
         result
     }
 

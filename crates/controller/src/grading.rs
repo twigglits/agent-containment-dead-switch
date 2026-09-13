@@ -141,6 +141,7 @@ pub(crate) struct GradingService {
     anchor: Anchor,
     broker: Mutex<BrokerLedger>,
     ledger: Mutex<GradingLedger>,
+    deadlines: Mutex<BTreeMap<String, Deadline>>,
     // Grader errors must not alter broker admission. Poisoning the two stores is independent.
     broker_poisoned: AtomicBool,
     grading_poisoned: AtomicBool,
@@ -276,11 +277,13 @@ impl GradingService {
         }
         Ok(Self {
             dir, anchor, broker: Mutex::new(broker), ledger: Mutex::new(ledger),
+            deadlines: Mutex::new(BTreeMap::new()),
             broker_poisoned: AtomicBool::new(false), grading_poisoned: AtomicBool::new(false),
             rate: Mutex::new(RateWindow { start: Instant::now(), count: 0 }),
             upload_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             client: reqwest::Client::builder().no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
                 .connect_timeout(Duration::from_secs(2)).timeout(Duration::from_secs(5)).build()?,
             _lock: lock,
         })
@@ -487,6 +490,7 @@ impl GradingService {
         };
         job.validate(now)?;
         job.bind_submission(&bytes)?;
+        let deadline = job.deadline(ledger.high_water, now)?;
         next.high_water = token;
         next.spent += 1;
         next.wall_high_water = now;
@@ -495,6 +499,7 @@ impl GradingService {
             state: JobState::DispatchConsumed, result: None });
         self.save_ledger(&next)?; // no send/ACK/signing authority escapes before this commit
         *ledger = next;
+        self.deadlines.lock().unwrap().insert(job.job_id.clone(), deadline);
         Ok(Dispatch { job, bytes })
     }
 
@@ -530,6 +535,8 @@ impl GradingService {
         }
         ensure!(claim.state == JobState::DispatchConsumed && claim.job.fencing_token == ledger.high_water,
             "terminal or fenced grading claim");
+        ensure!(self.deadlines.lock().unwrap().get(&claim.job.job_id)
+            .is_some_and(|deadline| !deadline.expired(now)), "grading monotonic deadline expired or lost");
         let mut next = ledger.clone();
         let claim = next.claims.get_mut(&hint.submission_digest).unwrap();
         claim.state = JobState::ResultCommitted;
@@ -584,20 +591,22 @@ struct UploadGrant {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum AdmissionStatus { Stored, Rejected }
+enum AdmissionStatus { Received }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AdmissionAck { status: AdmissionStatus }
 
-fn admission(status: AdmissionStatus) -> impl IntoResponse {
+fn admission() -> impl IntoResponse {
     // All broker responses use the same status and bounded vocabulary. They contain no digest,
     // grader queue position, result address, task answer, completion, or downstream error.
-    (StatusCode::ACCEPTED, Json(AdmissionAck { status }))
+    // Received means the broker handled the request; it does not reveal durable admission. Returning
+    // Stored/Rejected here would expose a cross-run CAS-membership oracle to later submissions.
+    (StatusCode::ACCEPTED, Json(AdmissionAck { status: AdmissionStatus::Received }))
 }
 
 async fn upload(State(app): S, AxPath(run_id): AxPath<String>, request: Request<Body>) -> impl IntoResponse {
-    let reject = || admission(AdmissionStatus::Rejected);
+    let reject = admission;
     let Some(service) = app.grading.as_ref() else { return reject(); };
     if !service.request_slot() { return reject(); }
     let Ok(_slot) = service.upload_slots.clone().try_acquire_owned() else { return reject(); };
@@ -615,11 +624,11 @@ async fn upload(State(app): S, AxPath(run_id): AxPath<String>, request: Request<
     let ctl = app.ctl.lock().unwrap();
     let Some(run) = ctl.runs.get(&run_id) else { return reject(); };
     if service.store_upload(run, &token, &bytes, now_unix()).is_ok() {
-        admission(AdmissionStatus::Stored)
+        admission()
     } else { reject() }
 }
 
-async fn upload_fallback() -> impl IntoResponse { admission(AdmissionStatus::Rejected) }
+async fn upload_fallback() -> impl IntoResponse { admission() }
 
 pub(crate) fn upload_router() -> Router<Arc<App>> {
     Router::new().route("/submissions/{run_id}", post(upload))
@@ -670,6 +679,13 @@ async fn authorize(State(app): S, headers: HeaderMap, AxPath(id): AxPath<String>
             return Err(bad(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()));
         }
     };
+    // Recheck immediately before transmission: storage delay cannot turn an old grant into a launch.
+    if dispatch.job.deadline(dispatch.job.fencing_token - 1, now_unix()).is_err()
+        || !service.deadlines.lock().unwrap().get(&dispatch.job.job_id)
+            .is_some_and(|deadline| !deadline.expired(now_unix())) {
+        service.abandon(&dispatch.job.job_id).map_err(|error| bad(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        return Ok(Json(DispatchAck { job_id: dispatch.job.job_id, status: DispatchStatus::DispatchUncertain }));
+    }
     // No redirects, environment proxy, URL supplied by agent, or automatic delivery retries.
     // The response body is intentionally never read. This path is operator-only.
     let delivered = service.client.post(GRADER_DISPATCH_URL).header("content-type", "application/octet-stream")

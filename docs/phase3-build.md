@@ -8,8 +8,9 @@ do not establish that a deployed QEMU image or kernel enforces the configuration
 ## Boundaries
 
 1. The controller upload broker terminates the submission connection and stores at most **65,536
-   raw bytes** under a recomputed SHA-256 digest. Its typed admission response has no dependency on
-   grading, score, result delivery, queue availability, or remaining grading budget.
+   raw bytes** under a recomputed SHA-256 digest. Its single opaque `202 {"status":"received"}`
+   receipt has no dependency on grading, score, result delivery, queue availability, or remaining
+   grading budget, and does not disclose admission or whether another run stored the digest.
 2. The operator separately authorizes grading. The evaluation must already be terminal with a
    pinned-hostd termination confirmation. Grading never changes an execution lease or run state.
 3. The controller consumes the one-submission claim, cumulative budget, and grading fencing token

@@ -49,6 +49,7 @@ struct Ledger {
     v: u32,
     binding: Binding,
     high_water: u64,
+    wall_floor: u64,
     quarantined: bool,
     claims: BTreeMap<String, Claim>,
 }
@@ -102,6 +103,7 @@ impl Store {
             v: 1,
             binding,
             high_water: 0,
+            wall_floor: deadswitch_common::now_unix(),
             quarantined: false,
             claims: BTreeMap::new(),
         };
@@ -143,6 +145,7 @@ impl Store {
 
     pub fn claim(&mut self, job: GradingJob, submission: &[u8], now: u64) -> anyhow::Result<PendingJob> {
         ensure!(!self.quarantined() && !self.busy(), "grader unavailable");
+        ensure!(now >= self.ledger.wall_floor, "trusted clock rolled back");
         ensure!(self.ledger.claims.len() < MAX_CLAIMS, "grader lifetime claim cap");
         ensure!(
             !self.ledger.claims.contains_key(&job.job_id)
@@ -168,6 +171,7 @@ impl Store {
         sync_dir(&self.root.join("jobs"))?;
         let mut next = self.ledger.clone();
         next.high_water = job.fencing_token;
+        next.wall_floor = now;
         next.claims.insert(
             job.job_id.clone(),
             Claim {
@@ -185,6 +189,8 @@ impl Store {
     pub fn commit(&mut self, job_id: &str, result: &Signed) -> anyhow::Result<()> {
         ensure!(!self.quarantined(), "grader quarantined");
         let mut next = self.ledger.clone();
+        ensure!(deadswitch_common::now_unix() >= next.wall_floor, "trusted clock rolled back");
+        next.wall_floor = deadswitch_common::now_unix();
         let claim = next.claims.get_mut(job_id).context("unknown job")?;
         ensure!(claim.status == ClaimStatus::ExecutionClaimed, "terminal job");
         // Bind again at the durable release boundary, including the local high-water fencing.
@@ -268,6 +274,7 @@ fn validate_binding(binding: &Binding) -> anyhow::Result<()> {
 fn validate_ledger(ledger: &Ledger, binding: &Binding) -> anyhow::Result<()> {
     validate_binding(binding)?;
     ensure!(ledger.v == 1 && &ledger.binding == binding, "grader state binding mismatch");
+    ensure!(deadswitch_common::now_unix() >= ledger.wall_floor, "persisted clock rollback");
     ensure!(ledger.claims.len() <= MAX_CLAIMS, "grader state bound");
     let mut tokens = BTreeSet::new();
     let mut digests = BTreeSet::new();

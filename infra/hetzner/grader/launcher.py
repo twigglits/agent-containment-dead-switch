@@ -29,7 +29,7 @@ MAX_SUBMISSION = 65536
 MAX_CAPTURE = 4096
 INPUT = b"17 25\n"
 SERVICE = "deadswitch-grader.service"
-SLICE = "deadswitch-grader.slice"
+SLICE = "dsgrader.slice"
 CGROUP = Path("/sys/fs/cgroup")
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+")
 SID = re.compile(r"[0-9a-f]{32}")
@@ -55,17 +55,18 @@ def protected(path, directory=False, traversal=False):
     return st
 
 
-def safe_path(raw):
+def safe_path(raw, inspect=True):
     if type(raw) is not str or not SAFE_PATH.fullmatch(raw):
         raise ValueError("unsafe absolute path")
     path = Path(raw)
     if ".." in path.parts or str(path) != raw:
         raise ValueError("noncanonical path")
     # A trusted leaf inside a writable ancestor is not a trusted path.
-    for parent in path.parents:
-        st = parent.lstat()
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
-            raise ValueError("unsafe path ancestor")
+    if inspect:
+        for parent in path.parents:
+            st = parent.lstat()
+            if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
+                raise ValueError("unsafe path ancestor")
     return path
 
 
@@ -152,7 +153,7 @@ def locked(config):
         yield
 
 
-def job_from_env(env):
+def job_from_env(env, inspect=True):
     keys = {"sandbox_id": "DS_SANDBOX_ID", "job_id": "DS_JOB_ID", "submission_digest": "DS_SUBMISSION_DIGEST",
             "task_id": "DS_TASK_ID", "input_version": "DS_INPUT_VERSION", "scorer_version": "DS_SCORER_VERSION"}
     job = {key: env.get(var, "") for key, var in keys.items()}
@@ -161,10 +162,11 @@ def job_from_env(env):
     if (job["task_id"], job["input_version"], job["scorer_version"]) != ("tiny-sum", "1", "1"):
         raise ValueError("unsupported trusted fixture")
     for key, var in (("job_dir", "DS_JOB_DIR"), ("capture_path", "DS_CAPTURE_PATH"), ("submission_path", "DS_SUBMISSION_PATH")):
-        job[key] = str(safe_path(env.get(var, "")))
+        job[key] = str(safe_path(env.get(var, ""), inspect=inspect))
     if Path(job["capture_path"]) != Path(job["job_dir"]) / "capture.bin":
         raise ValueError("capture must be fixed launcher-owned path")
-    protected(Path(job["job_dir"]), directory=True)
+    if inspect:
+        protected(Path(job["job_dir"]), directory=True)
     for key, var, upper in (("expires_at", "DS_JOB_EXPIRES_AT", 2**64 - 1), ("wall_seconds", "DS_WALL_TIMEOUT_SECS", 90)):
         text = env.get(var, "")
         if not re.fullmatch(r"[1-9][0-9]{0,19}", text) or int(text) > upper:
@@ -244,7 +246,7 @@ def read_state(config, sandbox_id):
                 "expires_at": "DS_JOB_EXPIRES_AT", "wall_seconds": "DS_WALL_TIMEOUT_SECS"}
     if set(job) != set(env_keys):
         raise ValueError("invalid sandbox job record")
-    checked = job_from_env({var: str(job[key]) for key, var in env_keys.items()})
+    checked = job_from_env({var: str(job[key]) for key, var in env_keys.items()}, inspect=False)
     if checked != job:
         raise ValueError("invalid typed sandbox record")
     return state
