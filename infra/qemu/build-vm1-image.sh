@@ -20,6 +20,27 @@ HARNESS_B64=$(tar czf - -C "$P/harness" . | base64 -w0)
 NETPLAN_B64=$(base64 -w0 < "$P/50-deadswitch.yaml")
 INIT_B64=$(base64 -w0 < "$P/vm1-init.sh")
 UNIT_B64=$(base64 -w0 < "$P/deadswitch-vm1-init.service")
+# Build-verification script written into the guest and run there — kept as a base64 blob so the
+# unquoted user-data heredoc below cannot expand its $(...) / $VAR on the HOST (which broke the old
+# inline runcmd) (Codex end-of-P1 #5). It actually EXECUTES obscura and a Playwright browser binary,
+# not just tests directory existence, and only then emits the DEADSWITCH_BUILD_OK marker.
+VERIFY_B64=$(base64 -w0 <<'VERIFY'
+#!/bin/bash
+set -e
+test -x /opt/obscura/obscura
+(/opt/obscura/obscura --version || /opt/obscura/obscura --help) >/dev/null 2>&1
+test -x /opt/harness/venv/bin/python
+ok=
+for c in /opt/ms-playwright/chromium-*/chrome-linux/chrome /opt/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell; do
+  [ -x "$c" ] || continue
+  if "$c" --version >/dev/null 2>&1 || "$c" --headless --version >/dev/null 2>&1 || "$c" --no-sandbox --version >/dev/null 2>&1; then ok=1; break; fi
+done
+test -n "$ok"
+command -v python3 >/dev/null
+touch /var/lib/deadswitch-build-ok
+echo DEADSWITCH_BUILD_OK > /dev/console
+VERIFY
+)
 cat > user-data <<YAML
 #cloud-config
 package_update: true
@@ -38,6 +59,10 @@ write_files:
   - path: /etc/systemd/system/deadswitch-vm1-init.service
     encoding: b64
     content: ${UNIT_B64}
+  - path: /usr/local/bin/deadswitch-verify-build
+    permissions: '0755'
+    encoding: b64
+    content: ${VERIFY_B64}
 runcmd:
   - [ bash, -c, "mkdir -p /opt/harness && base64 -d /tmp/harness.tgz.b64 | tar xz -C /opt/harness" ]
   - [ bash, -c, "python3 -m venv /opt/harness/venv" ]
@@ -55,8 +80,8 @@ runcmd:
   - [ bash, -c, "touch /etc/cloud/cloud-init.disabled" ]
   - [ bash, -c, "cp /root/50-deadswitch.yaml.keep /etc/netplan/50-deadswitch.yaml && chmod 600 /etc/netplan/50-deadswitch.yaml" ]
   - [ bash, -c, "passwd -l root || true" ]
-  - [ bash, -c, "mkdir -p /opt/obscura && curl -fsSL https://github.com/h4ckf0r0day/obscura/releases/download/v0.2.2/obscura-aarch64-linux-stealth.tar.gz -o /tmp/obscura.tgz && tar xzf /tmp/obscura.tgz -C /opt/obscura && (test -x /opt/obscura/obscura || mv /opt/obscura/*/obscura /opt/obscura/obscura 2>/dev/null || true) && chmod +x /opt/obscura/obscura && sha256sum /tmp/obscura.tgz > /opt/obscura/SHA256SUM" ]
-  - [ bash, -c, "touch /var/lib/deadswitch-build-ok" ]
+  - [ bash, -c, "set -euo pipefail; mkdir -p /opt/obscura; curl -fsSL https://github.com/h4ckf0r0day/obscura/releases/download/v0.2.2/obscura-aarch64-linux-stealth.tar.gz -o /tmp/obscura.tgz; echo '5fc7e90393e38dc60288381a523eaf8dddb9a1e2925874844c8433a69bdf75c1  /tmp/obscura.tgz' | sha256sum -c -; tar xzf /tmp/obscura.tgz -C /opt/obscura; test -x /opt/obscura/obscura || mv /opt/obscura/*/obscura /opt/obscura/obscura; chmod +x /opt/obscura/obscura; if [ -f /opt/obscura/obscura-worker ]; then chmod +x /opt/obscura/obscura-worker; fi; sha256sum /tmp/obscura.tgz > /opt/obscura/SHA256SUM; test -x /opt/obscura/obscura" ]
+  - [ bash, -c, "bash /usr/local/bin/deadswitch-verify-build" ]
 power_state: { mode: poweroff, timeout: 60, condition: true }
 YAML
 printf 'instance-id: build\nlocal-hostname: vm1-build\n' > meta-data
@@ -74,7 +99,13 @@ timeout 2400 qemu-system-aarch64 -machine virt,gic-version=3,accel=$accel -cpu $
   -device virtio-rng-pci \
   -serial file:"$OUT/build-serial.log" -display none || true
 
-grep -qE 'reboot: Power down|Reached target.*[Pp]oweroff|Power down' "$OUT/build-serial.log" || { echo "BUILD VM did not power off cleanly"; tail -40 "$OUT/build-serial.log"; }
+grep -qE 'reboot: Power down|Reached target.*[Pp]oweroff|Power down' "$OUT/build-serial.log" || { echo "BUILD FAILED: VM did not power off cleanly"; tail -60 "$OUT/build-serial.log"; exit 1; }
+# The build is only usable if obscura + Playwright browsers + the venv all verified inside the guest.
+# cloud-init runcmds do NOT fail the build on their own (it powers off regardless), so we require the
+# guest to have emitted the verification marker to the console (Codex end-of-P1 #5). A checksum
+# mismatch, a failed obscura extract, or a missing browser aborts that runcmd => marker absent => fail.
+grep -q 'DEADSWITCH_BUILD_OK' "$OUT/build-serial.log" || { echo "BUILD FAILED: verification marker absent (obscura/playwright/venv install failed inside VM1 build)"; tail -80 "$OUT/build-serial.log"; exit 1; }
 rm -f "$OUT/seed.iso" "$OUT/build-vars.fd" user-data meta-data
 sha256sum vm1.qcow2 QEMU_EFI.fd efivars-template.fd > SHA256SUMS
 cat SHA256SUMS
+echo "VM1 image build verified (DEADSWITCH_BUILD_OK)"

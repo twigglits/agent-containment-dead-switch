@@ -68,6 +68,11 @@ struct RunRecord {
     created_at: u64,
     last_evidence_at: Option<u64>,
     bypass_baseline: Option<u64>,
+    /// expected VM2 identity, pinned at enrollment; evidence must match (Codex end-of-P1 #3).
+    #[serde(default)]
+    expected_template_digest: Option<String>,
+    #[serde(default)]
+    expected_base_digest: Option<String>,
     reasons: Vec<String>,
     defender_actions: Vec<String>,
 }
@@ -183,6 +188,8 @@ async fn create_run(State(app): S, headers: HeaderMap) -> Resp<RunRecord> {
         created_at: now_unix(),
         last_evidence_at: None,
         bypass_baseline: None,
+        expected_template_digest: None,
+        expected_base_digest: None,
         reasons: vec![],
         defender_actions: vec![],
     };
@@ -250,6 +257,13 @@ async fn enroll(State(app): S, Json(s): Json<Signed>) -> Resp<EnrollResp> {
     }
     r.incarnation = Some(e.incarnation.clone());
     r.hostd_pubkey = Some(key_hex);
+    // Bind the expected VM2 image/template identity at enrollment so later evidence must match it
+    // (Codex end-of-P1 #3); enrolling with empty digests is refused.
+    if e.vm2.template_digest.is_empty() {
+        return Err(bad(StatusCode::BAD_REQUEST, "enroll missing template_digest"));
+    }
+    r.expected_template_digest = Some(e.vm2.template_digest.clone());
+    r.expected_base_digest = Some(e.vm2.base_image_digest.clone());
     if r.state == RunState::Created {
         r.state = RunState::Enrolled;
     }
@@ -362,8 +376,31 @@ fn policy(r: &RunRecord, ev: &HostEvidence, now: u64) -> Result<(), String> {
     if ev.vm2.running != Some(true) {
         return Err(format!("vm2 not observed running: {:?}", ev.vm2.running));
     }
-    if ev.vm2.nested_virt == Some(false) || ev.vm2.port_forwards.map(|n| n > 0).unwrap_or(false) || ev.vm2.writable_mounts.map(|n| n > 0).unwrap_or(false) {
-        return Err("vm2 configuration drifted".into());
+    // An unobservable config field (None) is NOT healthy: require positively-observed values, so
+    // "couldn't observe" can never pass as healthy (Codex end-of-P1 #3 / N5).
+    if ev.vm2.nested_virt != Some(true) {
+        return Err(format!("vm2 nested_virt not positively observed: {:?}", ev.vm2.nested_virt));
+    }
+    if ev.vm2.port_forwards != Some(0) || ev.vm2.writable_mounts != Some(0) {
+        return Err(format!("vm2 config drift: port_forwards={:?} writable_mounts={:?}", ev.vm2.port_forwards, ev.vm2.writable_mounts));
+    }
+    // Evidence must describe the SAME image/template pinned at enrollment (Codex end-of-P1 #3).
+    if r.expected_template_digest.as_deref() != Some(ev.vm2.template_digest.as_str())
+        || r.expected_base_digest.as_deref() != Some(ev.vm2.base_image_digest.as_str())
+    {
+        return Err("vm2 image/template digest differs from enrolled identity".into());
+    }
+    // Bind health to the run's own incarnation and the current lease authority: the evidence must
+    // carry the fencing token the controller last issued and a positive remaining deadline.
+    if ev.incarnation.is_empty() || r.incarnation.as_deref() != Some(ev.incarnation.as_str()) {
+        return Err("evidence incarnation mismatch".into());
+    }
+    // hostd must hold a live, non-stale lease (its token must be one this controller actually
+    // issued, i.e. ≤ the current high-water, and > 0, with time left). We do NOT require exact
+    // equality with the latest token: leases renew every 5 s while evidence arrives every 2 s, so a
+    // brief lag behind the newest token is normal and must not false-trip.
+    if r.epoch >= 1 && (ev.watchdog.lease_token == 0 || ev.watchdog.lease_token > r.fencing_token || ev.watchdog.deadline_remaining_ms <= 0) {
+        return Err(format!("watchdog not holding a valid live lease: token={} high_water={} remaining_ms={}", ev.watchdog.lease_token, r.fencing_token, ev.watchdog.deadline_remaining_ms));
     }
     if now.abs_diff(ev.measured_at) > CLOCK_SKEW_S {
         return Err("evidence measured_at out of window".into());
@@ -449,7 +486,13 @@ async fn defender(State(app): S, Json(q): Json<DefenderReq>) -> Resp<RunRecord> 
     if r.incarnation.as_deref() != Some(q.incarnation.as_str()) {
         return Err(bad(StatusCode::CONFLICT, "unknown incarnation"));
     }
+    // Bound the VM2-influenced history so a compromised VM2 cannot grow the durable record without
+    // limit via /defender (Codex end-of-P1 #6): keep the most recent 100.
     r.defender_actions.push(serde_json::to_string(&q.action).unwrap());
+    if r.defender_actions.len() > 100 {
+        let drop = r.defender_actions.len() - 100;
+        r.defender_actions.drain(0..drop);
+    }
     let ise = |x: anyhow::Error| bad(StatusCode::INTERNAL_SERVER_ERROR, x.to_string());
     match q.action {
         DefenderAction::TerminateVm1 { reason } => app.end_run(r, RunState::Revoked, &format!("defender terminate: {reason}")).map_err(ise)?,
@@ -566,7 +609,7 @@ async fn main() -> anyhow::Result<()> {
                 other => {
                     warn!(path = %p.display(), ?other, "unreadable run record: treating as revoked");
                     let id = p.file_stem().unwrap().to_string_lossy().to_string();
-                    let r = RunRecord { run_id: id.clone(), state: RunState::Revoked, incarnation: None, hostd_pubkey: None, epoch: 0, fencing_token: u64::MAX / 2, created_at: 0, last_evidence_at: None, bypass_baseline: None, reasons: vec!["corrupt record".into()], defender_actions: vec![] };
+                    let r = RunRecord { run_id: id.clone(), state: RunState::Revoked, incarnation: None, hostd_pubkey: None, epoch: 0, fencing_token: u64::MAX / 2, created_at: 0, last_evidence_at: None, bypass_baseline: None, expected_template_digest: None, expected_base_digest: None, reasons: vec!["corrupt record".into()], defender_actions: vec![] };
                     atomic_write_json(&p, &r)?;
                     runs.insert(id, r);
                 }
@@ -600,4 +643,74 @@ async fn main() -> anyhow::Result<()> {
     info!(listen = %a.listen, "listening");
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use deadswitch_common::{GateObs, GateState, Vm2Obs, WatchdogObs, ChokepointObs, UntrustedReport, Vm2Report, Vm1State, VmiResult, HostEvidence, PROTO_V, AUD_CONTROLLER};
+
+    fn run() -> RunRecord {
+        RunRecord {
+            run_id: "r".into(), state: RunState::Active, incarnation: Some("inc".into()), hostd_pubkey: None,
+            epoch: 1, fencing_token: 5, created_at: 0, last_evidence_at: None, bypass_baseline: Some(0),
+            expected_template_digest: Some("tmpl".into()), expected_base_digest: Some("base".into()),
+            reasons: vec![], defender_actions: vec![],
+        }
+    }
+    fn report(now: u64) -> UntrustedReport {
+        UntrustedReport { received_at: now, digest: "d".into(), body: Vm2Report {
+            run_id: "r".into(), seq: 1, sent_at: now, phase: "eval".into(), vm1_state: Vm1State::Running,
+            vmi: VmiResult::Unmeasured, gateway_allowed: 0, gateway_denied: 0, defender_actions: 0, log_dropped: 0 } }
+    }
+    fn healthy(now: u64) -> HostEvidence {
+        HostEvidence {
+            v: PROTO_V, kind: "host_evidence".into(), run_id: "r".into(), aud: AUD_CONTROLLER.into(),
+            incarnation: "inc".into(), nonce: "n".into(), measured_at: now,
+            vm2: Vm2Obs { running: Some(true), instance: "i".into(), pid: Some(1), started_at: Some(1),
+                template_digest: "tmpl".into(), base_image_digest: "base".into(),
+                nested_virt: Some(true), port_forwards: Some(0), writable_mounts: Some(0) },
+            gate: GateObs { state: GateState::Sealed, bypass_packets: Some(0) },
+            watchdog: WatchdogObs { lease_token: 5, deadline_remaining_ms: 9000 },
+            chokepoint: ChokepointObs::default(),
+            untrusted_vm2_report: Some(report(now)),
+        }
+    }
+
+    #[test]
+    fn healthy_passes_but_each_tampering_trips() {
+        let now = 1_000_000;
+        let r = run();
+        assert!(policy(&r, &healthy(now), now).is_ok(), "a fully-observed sealed run is healthy");
+
+        // forged "healthy" report while the gate is actually CUT ⇒ trip (host-observed gate wins).
+        let mut e = healthy(now); e.gate.state = GateState::Cut;
+        assert!(policy(&r, &e, now).is_err());
+
+        // image/template digest differs from the enrolled identity ⇒ trip.
+        let mut e = healthy(now); e.vm2.template_digest = "other".into();
+        assert!(policy(&r, &e, now).is_err());
+
+        // unobservable (None) config must NOT pass as healthy.
+        let mut e = healthy(now); e.vm2.nested_virt = None;
+        assert!(policy(&r, &e, now).is_err());
+        let mut e = healthy(now); e.vm2.port_forwards = None;
+        assert!(policy(&r, &e, now).is_err());
+
+        // report missing / stale ⇒ trip.
+        let mut e = healthy(now); e.untrusted_vm2_report = None;
+        assert!(policy(&r, &e, now).is_err());
+        let mut e = healthy(now); e.untrusted_vm2_report = Some(report(now - 100));
+        assert!(policy(&r, &e, now).is_err());
+
+        // watchdog not holding a live lease ⇒ trip.
+        let mut e = healthy(now); e.watchdog.deadline_remaining_ms = 0;
+        assert!(policy(&r, &e, now).is_err());
+        let mut e = healthy(now); e.watchdog.lease_token = 999; // above high-water = not issued by us
+        assert!(policy(&r, &e, now).is_err());
+
+        // incarnation mismatch ⇒ trip.
+        let mut e = healthy(now); e.incarnation = "evil".into();
+        assert!(policy(&r, &e, now).is_err());
+    }
 }

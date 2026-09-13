@@ -20,11 +20,13 @@ pub const MAX_LEASE_TTL_S: u64 = 15; // Mac profile bound; a delayed lease gets 
 pub const DEFAULT_LEASE_TTL_S: u64 = 15;
 pub const CLOCK_SKEW_S: u64 = 5;
 pub const CHALLENGE_TTL_S: u64 = 10;
-// VM2's report is a *liveness/rung-1* signal, not the kill bound (the lease watchdog + host-observed
-// evidence enforce that independently). On the Mac profile a nested-virt VM1 boot spikes VM2 CPU and
-// can starve the report thread for several seconds, so this window is wide enough to ride that out
-// while staying under the controller's 30 s no-evidence ticker.
-pub const REPORT_MAX_AGE_S: u64 = 20;
+// VM2's report is an *untrusted liveness/rung-1* signal, NOT the kill bound. hostd's own
+// host-observed evidence (vm2.running, gate sealed, bypass counters) is the authoritative health
+// signal and is unaffected by VM2 load. Prestage (uv + a CPython fetch) and a nested-virt VM1 boot
+// saturate VM2's vCPUs and can starve the VM2 report thread for tens of seconds; this window rides
+// that out. The real liveness gate is the controller's no-evidence ticker on hostd's OWN evidence
+// (hostd runs on the trusted host and is never starved by VM2), which trips independently.
+pub const REPORT_MAX_AGE_S: u64 = 60;
 pub const MISSED_CHALLENGES_TO_TRIP: u32 = 3;
 
 pub const AUD_HOSTD: &str = "hostd";

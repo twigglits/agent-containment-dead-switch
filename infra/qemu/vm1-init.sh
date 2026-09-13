@@ -14,7 +14,34 @@ export DISPLAY=:99
 export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >/var/log/xvfb.log 2>&1 &
 sleep 1
+# Consume the verified immutable deps image (attached read-only as /dev/vdb): the trusted side built
+# and digest-verified this exact snapshot at attach (Codex end-of-P1 #7). VM1 runs the PRESTAGED
+# harness + interpreter FROM the image — never a baked default — and there is NO fallback: a missing
+# image, missing config, or missing prestaged interpreter aborts the run as inconclusive rather than
+# silently executing an unverified path (which could be reported as "contained" without a real test).
+mkdir -p /deps
+abort() { echo "VM1_READY $(uname -r)"; echo "HARNESS_DONE {\"error\":\"$1\"}"; exit 0; }
+mount -o ro /dev/vdb /deps 2>/dev/null || abort "deps image /dev/vdb not mountable"
+[ -f /deps/run-config.json ] || abort "run-config.json missing from deps image"
+RC_MODEL=$(python3 -c "import json;print(json.load(open('/deps/run-config.json'))['model'])" 2>/dev/null)
+RC_MANIFEST=$(python3 -c "import json;print(json.load(open('/deps/run-config.json')).get('manifest_digest',''))" 2>/dev/null)
+[ -n "$RC_MODEL" ] || abort "model missing from run-config.json"
+# Mount + config parse succeeded — emit the mount marker now (qualification asserts THIS to prove the
+# mandatory deps-image consumption path, distinct from VM1_READY which the missing-image abort also
+# emits) (Codex end-of-P1 #6).
+echo "DEPS_IMAGE mounted ro; model=$RC_MODEL manifest=$RC_MANIFEST"
+[ -x /deps/venv/bin/python ] || abort "prestaged interpreter /deps/venv/bin/python missing"
+# The interpreter must actually RUN, and the harness + its deps must IMPORT from the image, before we
+# declare readiness — a broken venv relocation or a missing wheel aborts as inconclusive rather than
+# silently running an unverified path (Codex end-of-P1 #4).
+/deps/venv/bin/python -c 'import sys' 2>/dev/null || abort "prestaged interpreter not runnable in VM1"
+PYTHONPATH=/deps /deps/venv/bin/python -c 'import deadswitch_harness, playwright' 2>/dev/null || abort "harness or playwright import failed from deps image"
 echo "VM1_READY $(uname -r)"
-cd /opt/harness
-DS_GATEWAY="http://172.16.0.1:3128" DS_MODEL="${DS_MODEL:-qwen3:14b}" DS_MODE="${DS_MODE:-agentic}" \
-  timeout 180 /opt/harness/venv/bin/python -u -m deadswitch_harness 2>&1 | tee /var/log/harness.log || echo "HARNESS_DONE {\"error\":\"harness crashed or timed out\"}"
+# Execute the harness from the immutable image (code + interpreter both from /deps). PYTHONPATH=/deps
+# imports the package from the verified snapshot regardless of the relocatable venv's build path.
+# set -o pipefail so a python crash (not tee's success) is what the `||` sees.
+cd /deps
+set -o pipefail
+DS_GATEWAY="http://172.16.0.1:3128" DS_MODEL="$RC_MODEL" DS_MODE="${DS_MODE:-agentic}" DS_DEPS="/deps" \
+  PYTHONPATH="/deps" PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+  timeout 180 /deps/venv/bin/python -u -m deadswitch_harness 2>&1 | tee /var/log/harness.log || echo "HARNESS_DONE {\"error\":\"harness crashed or timed out\"}"

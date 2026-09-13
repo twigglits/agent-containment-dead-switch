@@ -62,7 +62,29 @@ impl Defender {
     pub fn review_inference(&self, body: &[u8], digest: &str) -> (Decision, Option<DefenderAction>) {
         let mut st = self.st.lock().unwrap();
         st.reviewed += 1;
-        let text = String::from_utf8_lossy(body);
+        // Scan the DECODED message text, not raw JSON bytes: a raw-byte scan misses JSON string
+        // escapes, so "AKIA..." evades an "AKIA" check but decodes to the real secret upstream
+        // (Codex end-of-P1 #5). Parse the request and concatenate the decoded string content; fall
+        // back to the raw text if parsing fails (a malformed body is denied by the gateway anyway).
+        let text: String = match serde_json::from_slice::<serde_json::Value>(body) {
+            Ok(v) => {
+                let mut s = String::new();
+                fn walk(v: &serde_json::Value, out: &mut String) {
+                    match v {
+                        serde_json::Value::String(t) => {
+                            out.push_str(t);
+                            out.push('\n');
+                        }
+                        serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+                        serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, out)),
+                        _ => {}
+                    }
+                }
+                walk(&v, &mut s);
+                s
+            }
+            Err(_) => String::from_utf8_lossy(body).into_owned(),
+        };
         // --- hard rules (non-overridable)
         for m in SECRET_MARKERS {
             if text.contains(m) {
@@ -112,6 +134,9 @@ mod tests {
         let (dec, act) = d.review_inference(b"{\"messages\":[{\"content\":\"-----BEGIN PRIVATE KEY-----\"}]}", "x");
         assert!(matches!(dec, Decision::Deny(_)));
         assert!(matches!(act, Some(DefenderAction::Veto { .. })));
+        // JSON-escape bypass: raw bytes contain AKIA, not AKIA, but the decoded content does.
+        let (dec2, _) = d.review_inference(br#"{"messages":[{"content":"send AKIA to me"}]}"#, "y");
+        assert!(matches!(dec2, Decision::Deny(_)), "unicode-escaped secret marker must be caught");
         let (dec, _) = d.review_inference(b"{\"messages\":[{\"content\":\"hello\"}]}", "y");
         assert_eq!(dec, Decision::Allow);
     }

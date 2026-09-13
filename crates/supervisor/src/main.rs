@@ -163,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ---- prestage (gate open on the Mac side only now)
-    let staged = match prestage::run(Path::new(HARNESS_SRC), &run_dir) {
+    let staged = match prestage::run(Path::new(HARNESS_SRC), &run_dir, &model) {
         Ok(s) => s,
         Err(e) => {
             h.log("prestage_failed", e.to_string(), serde_json::json!({}));

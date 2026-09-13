@@ -48,10 +48,16 @@ pub fn validate(model: &str, body: &[u8]) -> Result<serde_json::Value, &'static 
     if o.get("n").and_then(|n| n.as_u64()).unwrap_or(1) != 1 {
         return Err("n must be 1");
     }
-    if o.get("max_tokens").and_then(|n| n.as_u64()).unwrap_or(0) > 1024 {
-        return Err("max_tokens > 1024");
+    // max_tokens: must be a non-negative integer ≤ 1024 if present. `as_u64()` alone let -1 through
+    // (it returns None → treated as 0 → passed → forwarded unchanged, and Ollama maps -1 to unlimited
+    // generation). Reject any non-u64 or out-of-range value outright (Codex end-of-P1 #5).
+    if let Some(mt) = o.get("max_tokens") {
+        match mt.as_u64() {
+            Some(n) if n <= 1024 => {}
+            _ => return Err("max_tokens must be an integer in [0,1024]"),
+        }
     }
-    if !o.get("messages").map(|m| m.is_array()).unwrap_or(false) {
+    if o.get("messages").and_then(|m| m.as_array()).map(|a| a.is_empty()).unwrap_or(true) {
         return Err("messages required");
     }
     Ok(v)
@@ -120,8 +126,11 @@ mod tests {
         assert_eq!(validate("other", ok).unwrap_err(), "model not pinned");
         assert_eq!(validate("m", br#"{"model":"m","messages":[],"tools":[]}"#).unwrap_err(), "tool/function fields not allowed");
         assert_eq!(validate("m", br#"{"model":"m","messages":[],"stream":true}"#).unwrap_err(), "stream must be false");
-        assert_eq!(validate("m", br#"{"model":"m","messages":[],"max_tokens":4096}"#).unwrap_err(), "max_tokens > 1024");
+        assert_eq!(validate("m", br#"{"model":"m","messages":[{"role":"user","content":"h"}],"max_tokens":4096}"#).unwrap_err(), "max_tokens must be an integer in [0,1024]");
+        // the -1 bypass: as_u64() is None → must be rejected, not silently forwarded
+        assert_eq!(validate("m", br#"{"model":"m","messages":[{"role":"user","content":"h"}],"max_tokens":-1}"#).unwrap_err(), "max_tokens must be an integer in [0,1024]");
         assert_eq!(validate("m", br#"{"model":"m"}"#).unwrap_err(), "messages required");
+        assert_eq!(validate("m", br#"{"model":"m","messages":[]}"#).unwrap_err(), "messages required");
         assert_eq!(validate("m", b"GET / HTTP/1.1").unwrap_err(), "not json");
     }
 }

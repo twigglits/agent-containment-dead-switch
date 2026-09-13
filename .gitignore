@@ -3,3 +3,6 @@
 .DS_Store
 .omc/
 .claude/
+# terraform provider cache
+**/.terraform/
+*.tfstate*
