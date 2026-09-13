@@ -663,6 +663,38 @@ fn normal_result_release_clears_barrier_and_preserves_exact_result_on_restart() 
 }
 
 #[test]
+fn release_barrier_creation_or_corruption_fails_closed_before_result_release() {
+    let f = Fixture::new();
+    let service = f.init(1);
+    let r = run("r");
+    store(&service, &r, b"submission");
+    let r = stopped(r);
+    let job = service
+        .claim(&r, &request("campaign", "key1"), now_unix())
+        .unwrap()
+        .job;
+    let signed = Signed::sign(&f.scorer, "scorer", &result(&job, Score::Correct));
+    // An existing malformed marker cannot be replaced to grant fresh release authority.
+    create_private(
+        &service.dir.join("pending-release.json"),
+        &serde_json::json!({"corrupt": true}),
+    )
+    .unwrap();
+    assert!(service.commit_result(&r, &signed, now_unix()).is_err());
+    assert!(service.grading_poisoned.load(Ordering::SeqCst));
+    assert!(
+        service.ledger.lock().unwrap().claims[&job.submission_digest]
+            .result
+            .is_none()
+    );
+    let disk: GradingLedger = load_private(&service.dir.join("ledger.json")).unwrap();
+    assert!(disk.claims[&job.submission_digest].result.is_none());
+    assert_eq!(disk.spent, 1);
+    drop(service);
+    assert!(GradingService::open(&f.root, false, None, f.keys.clone()).is_err());
+}
+
+#[test]
 fn cas_mutation_missing_state_corruption_and_reinitialization_fail_closed() {
     let f = Fixture::new();
     let service = f.init(2);

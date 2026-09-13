@@ -34,6 +34,7 @@ Durable files under `--state-dir`:
 | `grading/broker.json` | Upload capabilities, persisted admission-rate state and globally unique submission claims |
 | `grading/objects/<sha256>` | Exact submitted bytes, created with mode 0400 and never modified by grading |
 | `grading/ledger.json` | Cumulative spend, fencing and clock high-water marks, pinned key registry, terminal jobs and committed signed results |
+| `grading/pending-release.json` | Temporary durable release barrier; a surviving marker causes recovery to withhold and abandon that result without refund or relaunch |
 | `grading/process.lock` | Exclusive process ownership using `flock`; a second controller cannot spend the same ledger |
 
 Directories are mode 0700 and ledger/anchor files are mode 0600. Writes use a fresh exclusive temp
@@ -162,7 +163,12 @@ Default append listener: `10.20.0.1:7201` (`--grading-results-listen` /
 `Signed` JSON whose role hint is `scorer`. The controller uses the key pinned to that job's
 held-out-key version, then verifies all common result bindings and lifecycle ordering, the original
 job's expiry and fence, both local clocks, terminal/confirmed eval identity, and unconsumed result
-authority. Only a completely valid result is durably appended to private storage before ACK:
+authority. A durable release barrier precedes the candidate write. Both clocks and fencing are
+checked again after that write is fsynced, before operator visibility or ACK. Expiry during
+persistence produces a private `abandoned` tombstone without a result or budget refund. An uncertain
+tombstone write poisons grading and leaves the barrier; startup abandons the marked claim before
+serving reads. Successful release clears the barrier and preserves the exact signed result on
+restart. Only a completely valid result is durably appended to private storage before ACK:
 
 ```json
 {"status":"appended"}
