@@ -9,6 +9,7 @@
 //! signer observed itself. Enforcement is fail-closed on both a monotonic and a wall clock.
 
 pub mod inference;
+pub mod grading;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};

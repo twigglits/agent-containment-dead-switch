@@ -1,7 +1,7 @@
 # agent-containment-dead-switch
 
 <p align="center">
-  <img src="assets/dead-switch.svg" width="900" height="500" alt="Animated walkthrough of the dead-switch: an AI agent inside nested VM1 makes one mediated inference call through the exact-action gateway and the deletable chokepoint; its raw egress attempt is blocked at the host gate (rung 0); it escapes into the supervisor VM2, whose forged heartbeat the off-host controller rejects (rung 1); the host goes silent, the run lease expires, and the off-host actuator deletes the chokepoint so egress fails closed and hardware-resets the host (rung 2), reporting the reset as unconfirmed and quarantining the allocation.">
+  <img src="assets/dead-switch.svg" width="900" height="500" alt="Animated walkthrough of the dead-switch with two AIs: the agent under evaluation inside nested VM1, and a bounded-authority defender AI in VM2 whose monitors are latched onto the network pipe (every request the agent sends or receives) and onto the VM1–VM2 boundary. The agent makes one monitored inference call through the exact-action gateway and the deletable chokepoint; its raw egress attempt is blocked at the host gate (rung 0); its breakout attempt trips the boundary monitor and the defender destroys VM1 (rung 1); a subverted VM2 forges a heartbeat that the off-host controller rejects (rung 1b); the host goes silent, the run lease expires, and the off-host actuator deletes the chokepoint so egress fails closed and hardware-resets the host (rung 2), reporting the reset as unconfirmed and quarantining the allocation.">
 </p>
 
 A reference architecture — and a working implementation — for a **fail-closed dead-switch** that
@@ -25,7 +25,7 @@ Face evaluation-security incident, whose report is transcribed in
 | [`harness/`](harness) | Python VM1 agent harness + regression tests |
 | [`infra/`](infra) | Lima/pf (Mac), QEMU VM1 image, Hetzner scripts, Terraform (Cloud pieces only) |
 | [`tests/`](tests) | Phase 1 trusted-side acceptance; Phase 2 offline + live skeleton |
-| [`assets/dead-switch.svg`](assets/dead-switch.svg) | Self-animating (CSS-only) walkthrough of the containment ladder, embedded above |
+| [`assets/dead-switch.svg`](assets/dead-switch.svg) | Self-animating (CSS-only) walkthrough of the containment ladder — agent AI in VM1, defender AI with pipe + boundary monitors in VM2 — embedded above |
 | [`JEAN_SUGGESTIONS.md`](JEAN_SUGGESTIONS.md) | Original safeguard ideas that seeded the design (package pre-staging, isolated grading) |
 
 ## Status (2026-09-13)

@@ -2,6 +2,8 @@
 //! evidence, applies the health policy, trips, and persists revocation before acknowledging it.
 //! Phase 1 runs it on the Mac; Phase 2 runs the same binary on Hetzner.
 
+mod grading;
+
 use anyhow::Context;
 use axum::{
     extract::{Path as AxPath, State},
@@ -40,6 +42,8 @@ struct Args {
     hostd_pubkeys_file: PathBuf,
     #[arg(long, default_value_t = DEFAULT_LEASE_TTL_S)]
     lease_ttl_s: u64,
+    #[command(flatten)]
+    grading: grading::GradingArgs,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,6 +87,9 @@ struct RunRecord {
     defender_actions: Vec<String>,
     #[serde(default)]
     request_replay: RequestReplay,
+    /// Trusted hostd teardown acknowledgment. Revocation alone is not proof the eval has stopped.
+    #[serde(default)]
+    termination_confirmed_at: Option<u64>,
 }
 
 /// Persist before applying a request. The clock floor prevents a wall rollback (including across
@@ -135,6 +142,7 @@ struct App {
     state_dir: PathBuf,
     lease_ttl_s: u64,
     ctl: Mutex<Ctl>,
+    grading: Option<Arc<grading::GradingService>>,
 }
 
 type S = State<Arc<App>>;
@@ -302,6 +310,7 @@ async fn create_run(State(app): S, headers: HeaderMap) -> Resp<RunRecord> {
         reasons: vec![],
         defender_actions: vec![],
         request_replay: RequestReplay::default(),
+        termination_confirmed_at: None,
     };
     app.persist(&r)
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -800,12 +809,13 @@ async fn terminated(State(app): S, Json(s): Json<Signed>) -> Resp<RunRecord> {
         &format!("hostd confirmed termination in {} ms", t.latency_ms),
     )
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    r.termination_confirmed_at = Some(now_unix());
     if r.state != RunState::Terminated {
         // keep the original terminal reason, but record that VM2 is gone
         r.reasons.push("terminated (confirmed)".into());
-        app.persist(r)
-            .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
+    app.persist(r)
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(r.clone()))
 }
 
@@ -919,6 +929,7 @@ async fn main() -> anyhow::Result<()> {
                         reasons: vec!["corrupt record".into()],
                         defender_actions: vec![],
                         request_replay: RequestReplay::default(),
+                        termination_confirmed_at: None,
                     };
                     atomic_write_json(&p, &r)?;
                     runs.insert(id, r);
@@ -926,6 +937,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+    let grading = grading::configure(&a.grading, &a.state_dir, &key, &hostd_keys, a.operator_listen)?;
     info!(controller_pubkey = %pubkey_hex(&key), runs = runs.len(), "controller up");
     let app = Arc::new(App {
         key,
@@ -938,12 +950,14 @@ async fn main() -> anyhow::Result<()> {
             live: HashMap::new(),
             nonces: HashMap::new(),
         }),
+        grading,
     });
     tokio::spawn(ticker(app.clone()));
     let operator_router = Router::new()
         .route("/runs", post(create_run).get(list_runs))
         .route("/runs/{id}", get(get_run))
-        .route("/runs/{id}/revoke", post(revoke_run));
+        .route("/runs/{id}/revoke", post(revoke_run))
+        .merge(grading::operator_router());
     let mut router = Router::new()
         .route("/health", get(health))
         .route("/enroll", post(enroll))
@@ -973,6 +987,7 @@ async fn main() -> anyhow::Result<()> {
         );
         router = router.merge(operator_router); // Phase 1 loopback profile
     }
+    grading::start_listeners(&a.grading, app.clone()).await?;
     let router = router
         .layer(axum::extract::DefaultBodyLimit::max(MAX_MSG_BYTES + 4096))
         .with_state(app);
@@ -1006,6 +1021,7 @@ mod policy_tests {
             reasons: vec![],
             defender_actions: vec![],
             request_replay: RequestReplay::default(),
+            termination_confirmed_at: None,
         }
     }
     fn report(now: u64) -> UntrustedReport {
@@ -1082,6 +1098,7 @@ mod policy_tests {
                     live: HashMap::new(),
                     nonces: HashMap::new(),
                 }),
+                grading: None,
             });
             Self { app, host }
         }

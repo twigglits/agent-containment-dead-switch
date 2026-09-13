@@ -1,5 +1,5 @@
 [package]
-name = "deadswitch-controller"
+name = "deadswitch-grader"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,19 +9,11 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ed25519-dalek.workspace = true
-rand.workspace = true
-sha2.workspace = true
-hex.workspace = true
-thiserror.workspace = true
 deadswitch-common.workspace = true
-tokio.workspace = true
-axum.workspace = true
 reqwest.workspace = true
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-ulid = "1"
+tokio.workspace = true
+axum.workspace = true
 libc = "0.2"
-
-[dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
