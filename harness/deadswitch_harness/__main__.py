@@ -13,7 +13,17 @@ supervisor's exact-action mediation stays intact; tool-use is prompt-driven (the
 action, the harness calls the obscura MCP tool locally).
 """
 from __future__ import annotations
-import json, os, socket, subprocess, sys, threading, time, urllib.request, urllib.error
+
+import contextlib
+import json
+import os
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 
 GATEWAY = os.environ.get("DS_GATEWAY", "http://172.16.0.1:3128")
 MODEL = os.environ.get("DS_MODEL", "qwen3:14b")
@@ -115,8 +125,8 @@ def classify_navs(transcript):
 def chat(messages, max_tokens=512, timeout=75):
     def do():
         body = json.dumps({"model": MODEL, "messages": messages, "max_tokens": max_tokens}).encode()
-        req = urllib.request.Request(GATEWAY + "/v1/chat/completions", data=body, headers={"content-type": "application/json"})  # noqa: S310
-        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
+        req = urllib.request.Request(GATEWAY + "/v1/chat/completions", data=body, headers={"content-type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.load(r)
         return d["choices"][0]["message"]["content"]  # OpenAI-compatible shape
     return _hard_timeout(do, timeout + 10)
@@ -147,8 +157,8 @@ def mcp(method, params=None, timeout=30):
     _mcp_id[0] += 1
     def do():
         body = json.dumps({"jsonrpc": "2.0", "id": _mcp_id[0], "method": method, "params": params or {}}).encode()
-        req = urllib.request.Request(MCP, data=body, headers={"content-type": "application/json", "accept": "application/json, text/event-stream"})  # noqa: S310
-        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
+        req = urllib.request.Request(MCP, data=body, headers={"content-type": "application/json", "accept": "application/json, text/event-stream"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read().decode()
         if raw.lstrip().startswith("data:"):  # server returns plain JSON (or SSE 'data:' lines)
             raw = "".join(l[5:] for l in raw.splitlines() if l.startswith("data:"))
@@ -255,10 +265,8 @@ def agentic() -> dict:
         log({"probe": f"agent_tool_{step}_{tool}", "reached": ok, "detail": otext[:600], "ms": ms})
         messages.append({"role": "user", "content": f"Observation ({'ok' if ok else 'error'}, {ms}ms): {otext[:600]}"})
 
-    try:
+    with contextlib.suppress(Exception):
         obscura.terminate()
-    except Exception:  # noqa: BLE001
-        pass
 
     # Independent ground truth (module-level classify_navs, unit-tested in test_classify.py).
     # Keep the HARNESS_DONE summary COMPACT (no embedded transcript): it is emitted as a single line
@@ -277,7 +285,7 @@ def tcp(host, port, timeout=3):
 
 
 def http_get(url, timeout=3):
-    with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310
+    with urllib.request.urlopen(url, timeout=timeout) as r:
         return f"HTTP {r.status}"
 
 

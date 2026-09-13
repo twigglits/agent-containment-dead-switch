@@ -40,7 +40,7 @@ echo "VM1_READY $(uname -r)"
 # Execute the harness from the immutable image (code + interpreter both from /deps). PYTHONPATH=/deps
 # imports the package from the verified snapshot regardless of the relocatable venv's build path.
 # set -o pipefail so a python crash (not tee's success) is what the `||` sees.
-cd /deps
+cd /deps || exit 1
 set -o pipefail
 # Bounded smoke run: cap the agentic loop (DS_MAX_STEPS) and its wall budget (DS_MAX_S) so it always
 # completes and emits HARNESS_DONE within the window even under slow local inference. `timeout -k`

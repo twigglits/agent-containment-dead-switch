@@ -40,25 +40,56 @@ pub struct Kmem {
 
 impl Vm1 {
     pub fn new(work: &Path) -> Self {
-        Vm1 { work: work.into(), qmp: work.join("qmp.sock"), serial: work.join("serial.log"), child: None, state: Vm1State::NotStarted, boot_ms: None }
+        Vm1 {
+            work: work.into(),
+            qmp: work.join("qmp.sock"),
+            serial: work.join("serial.log"),
+            child: None,
+            state: Vm1State::NotStarted,
+            boot_ms: None,
+        }
     }
 
     pub fn net_up() -> anyhow::Result<()> {
-        let out = Command::new("/bin/bash").arg(NET_SCRIPT).output().context("vm1-net.sh")?;
-        anyhow::ensure!(out.status.success(), "vm1-net.sh: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("/bin/bash")
+            .arg(NET_SCRIPT)
+            .output()
+            .context("vm1-net.sh")?;
+        anyhow::ensure!(
+            out.status.success(),
+            "vm1-net.sh: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         Ok(())
     }
 
     pub fn net_deny_all() {
-        let _ = Command::new("/usr/sbin/nft").args(["flush", "chain", "inet", "vm1", "input"]).status();
-        let _ = Command::new("/usr/sbin/nft").args(["add", "rule", "inet", "vm1", "input", "iifname", "tap0", "counter", "drop"]).status();
-        let _ = Command::new("/usr/sbin/nft").args(["flush", "chain", "inet", "vm1", "output"]).status();
-        let _ = Command::new("/usr/sbin/nft").args(["add", "rule", "inet", "vm1", "output", "oifname", "tap0", "counter", "drop"]).status();
-        let _ = Command::new("/usr/sbin/conntrack").args(["-F"]).stderr(Stdio::null()).status();
+        let _ = Command::new("/usr/sbin/nft")
+            .args(["flush", "chain", "inet", "vm1", "input"])
+            .status();
+        let _ = Command::new("/usr/sbin/nft")
+            .args([
+                "add", "rule", "inet", "vm1", "input", "iifname", "tap0", "counter", "drop",
+            ])
+            .status();
+        let _ = Command::new("/usr/sbin/nft")
+            .args(["flush", "chain", "inet", "vm1", "output"])
+            .status();
+        let _ = Command::new("/usr/sbin/nft")
+            .args([
+                "add", "rule", "inet", "vm1", "output", "oifname", "tap0", "counter", "drop",
+            ])
+            .status();
+        let _ = Command::new("/usr/sbin/conntrack")
+            .args(["-F"])
+            .stderr(Stdio::null())
+            .status();
     }
 
     pub fn nft_drop_counters() -> serde_json::Value {
-        let out = Command::new("/usr/sbin/nft").args(["-j", "list", "table", "inet", "vm1"]).output();
+        let out = Command::new("/usr/sbin/nft")
+            .args(["-j", "list", "table", "inet", "vm1"])
+            .output();
         let Ok(out) = out else { return json!(null) };
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or(json!(null));
         let mut drops = 0u64;
@@ -83,36 +114,76 @@ impl Vm1 {
     /// prestaged image. `firmware` = QEMU_EFI code; `varstore` = a per-run writable EFI var copy.
     /// KASLR is fine: the guest reports its own per-boot kernel physical ranges (KMEM), and VMI
     /// compares within the same boot, so no `nokaslr` is needed.
-    pub fn boot(&mut self, firmware: &Path, varstore: &Path, disk: &Path, deps: &Path, vcpus: u32, mem_mib: u32) -> anyhow::Result<()> {
+    pub fn boot(
+        &mut self,
+        firmware: &Path,
+        varstore: &Path,
+        disk: &Path,
+        deps: &Path,
+        vcpus: u32,
+        mem_mib: u32,
+    ) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.work)?;
         let _ = std::fs::remove_file(&self.qmp);
         // Accelerate with KVM if VM2 exposes it (nested virt); else TCG (slow, still correct).
-        let accel = if Path::new("/dev/kvm").exists() { "accel=kvm" } else { "accel=tcg" };
-        let cpu = if Path::new("/dev/kvm").exists() { "host" } else { "cortex-a57" };
+        let accel = if Path::new("/dev/kvm").exists() {
+            "accel=kvm"
+        } else {
+            "accel=tcg"
+        };
+        let cpu = if Path::new("/dev/kvm").exists() {
+            "host"
+        } else {
+            "cortex-a57"
+        };
         let mut cmd = Command::new(QEMU);
         cmd.args([
-            "-machine", &format!("virt,gic-version=3,{accel}"),
+            "-machine",
+            &format!("virt,gic-version=3,{accel}"),
             // -cpu host with NO +vmx/+svm ⇒ VM1 gets no nested-virt (spec decision 9 / Januscape).
-            "-cpu", cpu,
-            "-smp", &vcpus.to_string(),
-            "-m", &mem_mib.to_string(),
+            "-cpu",
+            cpu,
+            "-smp",
+            &vcpus.to_string(),
+            "-m",
+            &mem_mib.to_string(),
             "-nographic",
-            "-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
+            "-sandbox",
+            "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
             "-nodefaults",
             "-no-user-config",
-            "-drive", &format!("if=pflash,format=raw,unit=0,readonly=on,file={}", firmware.display()),
-            "-drive", &format!("if=pflash,format=raw,unit=1,file={}", varstore.display()),
-            "-drive", &format!("if=virtio,format=qcow2,file={}", disk.display()),
-            "-drive", &format!("if=virtio,format=raw,file={},readonly=on", deps.display()),
-            "-netdev", "tap,id=n0,ifname=tap0,script=no,downscript=no",
-            "-device", "virtio-net-pci,netdev=n0,mac=06:00:AC:10:00:02,romfile=",
-            "-device", "virtio-gpu-pci", // browser rendering surface
-            "-device", "virtio-rng-pci",
-            "-serial", "chardev:ser0",
-            "-chardev", &format!("file,id=ser0,path={}", self.serial.display()),
-            "-qmp", &format!("unix:{},server=on,wait=off", self.qmp.display()),
+            "-drive",
+            &format!(
+                "if=pflash,format=raw,unit=0,readonly=on,file={}",
+                firmware.display()
+            ),
+            "-drive",
+            &format!("if=pflash,format=raw,unit=1,file={}", varstore.display()),
+            "-drive",
+            &format!("if=virtio,format=qcow2,file={}", disk.display()),
+            "-drive",
+            &format!("if=virtio,format=raw,file={},readonly=on", deps.display()),
+            "-netdev",
+            "tap,id=n0,ifname=tap0,script=no,downscript=no",
+            "-device",
+            "virtio-net-pci,netdev=n0,mac=06:00:AC:10:00:02,romfile=",
+            "-device",
+            "virtio-gpu-pci", // browser rendering surface
+            "-device",
+            "virtio-rng-pci",
+            "-serial",
+            "chardev:ser0",
+            "-chardev",
+            &format!("file,id=ser0,path={}", self.serial.display()),
+            "-qmp",
+            &format!("unix:{},server=on,wait=off", self.qmp.display()),
         ]);
-        let child = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().context("spawn qemu")?;
+        let child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("spawn qemu")?;
         self.child = Some(child);
         self.state = Vm1State::Booting;
         let t0 = Instant::now();
@@ -120,7 +191,10 @@ impl Vm1 {
             std::thread::sleep(Duration::from_millis(100));
             if let Some(c) = self.child.as_mut() {
                 if let Some(st) = c.try_wait()? {
-                    return Err(anyhow!("qemu exited during boot: {st}; serial tail:\n{}", self.serial_tail(25)));
+                    return Err(anyhow!(
+                        "qemu exited during boot: {st}; serial tail:\n{}",
+                        self.serial_tail(25)
+                    ));
                 }
             }
             let s = std::fs::read_to_string(&self.serial).unwrap_or_default();
@@ -130,7 +204,10 @@ impl Vm1 {
                 return Ok(());
             }
         }
-        Err(anyhow!("VM1 did not signal ready in 120s; serial tail:\n{}", self.serial_tail(25)))
+        Err(anyhow!(
+            "VM1 did not signal ready in 120s; serial tail:\n{}",
+            self.serial_tail(25)
+        ))
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -149,15 +226,25 @@ impl Vm1 {
         // (e.g. a truncated burst) does not mask a later valid one, and the freshest marker wins.
         s.lines()
             .filter(|l| l.trim_start().starts_with(prefix))
-            .filter_map(|l| serde_json::from_str(l.trim_start().trim_start_matches(prefix).trim()).ok())
+            .filter_map(|l| {
+                serde_json::from_str(l.trim_start().trim_start_matches(prefix).trim()).ok()
+            })
             .next_back()
     }
 
     /// Physical kernel ranges the guest reported (from /proc/iomem) before the harness started.
     pub fn kmem(&self) -> Option<Kmem> {
         let v = self.serial_json_line("KMEM ")?;
-        let g = |k: &str| v[k].as_str().and_then(|h| u64::from_str_radix(h.trim_start_matches("0x"), 16).ok());
-        Some(Kmem { code_start: g("code_start")?, code_end: g("code_end")?, rodata_start: g("rodata_start")?, rodata_end: g("rodata_end")? })
+        let g = |k: &str| {
+            v[k].as_str()
+                .and_then(|h| u64::from_str_radix(h.trim_start_matches("0x"), 16).ok())
+        };
+        Some(Kmem {
+            code_start: g("code_start")?,
+            code_end: g("code_end")?,
+            rodata_start: g("rodata_start")?,
+            rodata_end: g("rodata_end")?,
+        })
     }
 
     pub fn harness_done(&self) -> Option<serde_json::Value> {
@@ -165,8 +252,13 @@ impl Vm1 {
     }
 
     // ---- QMP ----
-    fn qmp_call(&self, execute: &str, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let mut stream = UnixStream::connect(&self.qmp).with_context(|| format!("connect QMP {}", self.qmp.display()))?;
+    fn qmp_call(
+        &self,
+        execute: &str,
+        args: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut stream = UnixStream::connect(&self.qmp)
+            .with_context(|| format!("connect QMP {}", self.qmp.display()))?;
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut line = String::new();
@@ -181,7 +273,11 @@ impl Vm1 {
                 break;
             }
         }
-        let req = if args.is_null() { json!({"execute": execute}) } else { json!({"execute": execute, "arguments": args}) };
+        let req = if args.is_null() {
+            json!({"execute": execute})
+        } else {
+            json!({"execute": execute, "arguments": args})
+        };
         writeln!(stream, "{req}")?;
         loop {
             line.clear();
@@ -213,7 +309,10 @@ impl Vm1 {
     /// Save a guest-physical range to a host file and return its sha256 + bytes read back.
     pub fn pmemsave(&self, phys: u64, size: u64, out: &Path) -> anyhow::Result<()> {
         let _ = std::fs::remove_file(out);
-        self.qmp_call("pmemsave", json!({"val": phys, "size": size, "filename": out}))?;
+        self.qmp_call(
+            "pmemsave",
+            json!({"val": phys, "size": size, "filename": out}),
+        )?;
         Ok(())
     }
 
@@ -221,7 +320,10 @@ impl Vm1 {
         use sha2::{Digest, Sha256};
         let mut f = std::fs::File::open(out)?;
         let len = f.metadata()?.len();
-        anyhow::ensure!(len == expect_len, "pmemsave wrote {len} bytes, expected {expect_len}");
+        anyhow::ensure!(
+            len == expect_len,
+            "pmemsave wrote {len} bytes, expected {expect_len}"
+        );
         f.seek(SeekFrom::Start(0))?;
         let mut h = Sha256::new();
         let mut buf = vec![0u8; 1 << 20];

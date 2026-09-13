@@ -33,7 +33,11 @@ const EVIDENCE_QUOTA_BYTES: u64 = 256 * 1024 * 1024;
 /// must never block indefinitely on a wedged limactl/pfctl (Codex end-of-P1 #1).
 fn output_bounded(mut c: Command, secs: u64) -> std::io::Result<std::process::Output> {
     use std::io::{Error, ErrorKind};
-    let child = c.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null()).spawn()?;
+    let child = c
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .spawn()?;
     let pid = child.id();
     // Collect the child on a dedicated thread so a >64 KiB output filling the OS pipe buffer cannot
     // wedge us, and so the call ALWAYS returns within `secs` even if a grandchild keeps the pipe
@@ -47,14 +51,23 @@ fn output_bounded(mut c: Command, secs: u64) -> std::io::Result<std::process::Ou
     match rx.recv_timeout(Duration::from_secs(secs)) {
         Ok(r) => r,
         Err(_) => {
-            let _ = Command::new("/bin/kill").args(["-9", &pid.to_string()]).status();
-            Err(Error::new(ErrorKind::TimedOut, format!("command timed out after {secs}s")))
+            let _ = Command::new("/bin/kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+            Err(Error::new(
+                ErrorKind::TimedOut,
+                format!("command timed out after {secs}s"),
+            ))
         }
     }
 }
 
 fn pid_alive(pid: u32) -> bool {
-    Command::new("/bin/kill").args(["-0", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false)
+    Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 const SERVICE_USER: &str = "_deadswitch";
@@ -119,7 +132,15 @@ enum Cmd {
 
 fn lima() -> Command {
     let mut c = Command::new("/usr/bin/sudo");
-    c.args(["-n", "-u", SERVICE_USER, "-H", "env", &format!("LIMA_HOME={LIMA_HOME}"), "/opt/homebrew/bin/limactl"]);
+    c.args([
+        "-n",
+        "-u",
+        SERVICE_USER,
+        "-H",
+        "env",
+        &format!("LIMA_HOME={LIMA_HOME}"),
+        "/opt/homebrew/bin/limactl",
+    ]);
     c
 }
 
@@ -129,17 +150,27 @@ fn run_ok(c: Command, what: &str) -> anyhow::Result<String> {
 fn run_ok_t(c: Command, what: &str, secs: u64) -> anyhow::Result<String> {
     let out = output_bounded(c, secs).with_context(|| what.to_string())?;
     if !out.status.success() {
-        return Err(anyhow!("{what} failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(anyhow!(
+            "{what} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 /// pf must be ENABLED for the anchor rules to have any effect; a disabled pf still lists rules.
 fn pf_enabled() -> bool {
-    output_bounded({ let mut c = Command::new("/sbin/pfctl"); c.args(["-s", "info"]); c }, 5)
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("Status: Enabled"))
-        .unwrap_or(false)
+    output_bounded(
+        {
+            let mut c = Command::new("/sbin/pfctl");
+            c.args(["-s", "info"]);
+            c
+        },
+        5,
+    )
+    .ok()
+    .map(|o| String::from_utf8_lossy(&o.stdout).contains("Status: Enabled"))
+    .unwrap_or(false)
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -155,8 +186,19 @@ struct LimaInstance {
 fn lima_list() -> anyhow::Result<Vec<LimaInstance>> {
     // Bounded to 15s so enumeration cannot stall the challenge/guard paths for the 45s default
     // (Codex end-of-P1 #1); a healthy `limactl list` is sub-second.
-    let out = run_ok_t({ let mut c = lima(); c.args(["list", "--json"]); c }, "limactl list", 15)?;
-    out.lines().filter(|l| l.trim_start().starts_with('{')).map(|l| serde_json::from_str(l).map_err(Into::into)).collect()
+    let out = run_ok_t(
+        {
+            let mut c = lima();
+            c.args(["list", "--json"]);
+            c
+        },
+        "limactl list",
+        15,
+    )?;
+    out.lines()
+        .filter(|l| l.trim_start().starts_with('{'))
+        .map(|l| serde_json::from_str(l).map_err(Into::into))
+        .collect()
 }
 
 fn gate_rules(state: GateState) -> String {
@@ -172,7 +214,15 @@ fn gate_rules(state: GateState) -> String {
 fn gate_set(state: GateState) -> anyhow::Result<()> {
     let p = Path::new(STATE_DIR).join("pf.anchor");
     std::fs::write(&p, gate_rules(state))?;
-    run_ok_t({ let mut c = Command::new("/sbin/pfctl"); c.args(["-q", "-a", "deadswitch", "-f", p.to_str().unwrap()]); c }, "pfctl load anchor", 10)?;
+    run_ok_t(
+        {
+            let mut c = Command::new("/sbin/pfctl");
+            c.args(["-q", "-a", "deadswitch", "-f", p.to_str().unwrap()]);
+            c
+        },
+        "pfctl load anchor",
+        10,
+    )?;
     // On SEAL and CUT, tear down existing pf states so egress flows opened while the gate was OPEN
     // (prestage-era package fetches) cannot survive into the sealed/eval phase — a real containment
     // hole otherwise (Codex end-of-P1 #2). The raw-TCP reporter opens a fresh VM2->hostd connection
@@ -185,7 +235,11 @@ fn gate_set(state: GateState) -> anyhow::Result<()> {
         // teardown MUST succeed (nonzero exit ⇒ we cannot vouch the OPEN-era flows are gone) before
         // evaluation is allowed — check the EXIT STATUS, not merely that the subprocess ran (Codex
         // end-of-P1 #2). On CUT it is best-effort (we are already tearing the run down).
-        let mk = || { let mut c = Command::new("/sbin/pfctl"); c.args(["-q", "-F", "states"]); c };
+        let mk = || {
+            let mut c = Command::new("/sbin/pfctl");
+            c.args(["-q", "-F", "states"]);
+            c
+        };
         if state == GateState::Sealed {
             run_ok_t(mk(), "pf flush states on seal", 5)?;
         } else {
@@ -198,13 +252,24 @@ fn gate_set(state: GateState) -> anyhow::Result<()> {
 
 /// (state as read back from pf, blocked packet count for the bypass label)
 fn gate_observe() -> (GateState, Option<u64>) {
-    let rules = match run_ok({ let mut c = Command::new("/sbin/pfctl"); c.args(["-a", "deadswitch", "-sr"]); c }, "pfctl -sr") {
+    let rules = match run_ok(
+        {
+            let mut c = Command::new("/sbin/pfctl");
+            c.args(["-a", "deadswitch", "-sr"]);
+            c
+        },
+        "pfctl -sr",
+    ) {
         Ok(s) => s,
         Err(_) => return (GateState::Unknown, None),
     };
     let has_pass_all = rules.lines().any(|l| l.starts_with("pass out quick all"));
-    let has_pass_hostd = rules.lines().any(|l| l.starts_with("pass out quick") && l.contains(&HOSTD_PORT.to_string()));
-    let has_block = rules.lines().any(|l| l.starts_with("block drop out log quick all"));
+    let has_pass_hostd = rules
+        .lines()
+        .any(|l| l.starts_with("pass out quick") && l.contains(&HOSTD_PORT.to_string()));
+    let has_block = rules
+        .lines()
+        .any(|l| l.starts_with("block drop out log quick all"));
     // Rules present but pf disabled ⇒ NOT effectively enforcing ⇒ Unknown (never reported healthy).
     let state = if !pf_enabled() {
         GateState::Unknown
@@ -216,13 +281,28 @@ fn gate_observe() -> (GateState, Option<u64>) {
             _ => GateState::Unknown,
         }
     };
-    let labels = run_ok({ let mut c = Command::new("/sbin/pfctl"); c.args(["-a", "deadswitch", "-sl"]); c }, "pfctl -sl").unwrap_or_default();
-    let packets = labels.lines().find(|l| l.starts_with("deadswitch_bypass")).and_then(|l| l.split_whitespace().nth(2)).and_then(|n| n.parse().ok());
+    let labels = run_ok(
+        {
+            let mut c = Command::new("/sbin/pfctl");
+            c.args(["-a", "deadswitch", "-sl"]);
+            c
+        },
+        "pfctl -sl",
+    )
+    .unwrap_or_default();
+    let packets = labels
+        .lines()
+        .find(|l| l.starts_with("deadswitch_bypass"))
+        .and_then(|l| l.split_whitespace().nth(2))
+        .and_then(|n| n.parse().ok());
     (state, packets)
 }
 
 fn pid_start_time(pid: u32) -> Option<u64> {
-    let out = Command::new("/bin/ps").args(["-o", "lstart=", "-p", &pid.to_string()]).output().ok()?;
+    let out = Command::new("/bin/ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() {
         return None;
@@ -232,27 +312,71 @@ fn pid_start_time(pid: u32) -> Option<u64> {
 }
 
 fn observe_vm2(instance: &str, template_digest: &str, base_image_digest: &str) -> Vm2Obs {
-    let mut o = Vm2Obs { instance: instance.into(), template_digest: template_digest.into(), base_image_digest: base_image_digest.into(), ..Default::default() };
+    let mut o = Vm2Obs {
+        instance: instance.into(),
+        template_digest: template_digest.into(),
+        base_image_digest: base_image_digest.into(),
+        ..Default::default()
+    };
     let Ok(list) = lima_list() else { return o };
     let Some(i) = list.into_iter().find(|i| i.name == instance) else {
         o.running = Some(false);
         return o;
     };
-    let pid = std::fs::read_to_string(Path::new(&i.dir).join("vz.pid")).ok().and_then(|s| s.trim().parse::<u32>().ok());
-    let alive = pid.map(|p| Path::new(&format!("/proc/{p}")).exists() || Command::new("/bin/kill").args(["-0", &p.to_string()]).status().map(|s| s.success()).unwrap_or(false)).unwrap_or(false);
+    let pid = std::fs::read_to_string(Path::new(&i.dir).join("vz.pid"))
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok());
+    let alive = pid
+        .map(|p| {
+            Path::new(&format!("/proc/{p}")).exists()
+                || Command::new("/bin/kill")
+                    .args(["-0", &p.to_string()])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false);
     o.running = Some(i.status == "Running" && alive);
     o.pid = pid;
     o.started_at = pid.and_then(pid_start_time);
     // We have the instance config object here, so absent list fields mean "none configured" = 0
     // (Some(0)), NOT "unobservable" (None). None is reserved for a field type we truly cannot read.
     let have_config = i.config.is_object();
-    o.nested_virt = i.config.get("nestedVirtualization").and_then(|v| v.as_bool()).or(if have_config { Some(false) } else { None });
+    o.nested_virt = i
+        .config
+        .get("nestedVirtualization")
+        .and_then(|v| v.as_bool())
+        .or(if have_config { Some(false) } else { None });
     o.port_forwards = if have_config {
-        Some(i.config.get("portForwards").and_then(|v| v.as_array()).map(|a| a.iter().filter(|r| !r.get("ignore").and_then(|x| x.as_bool()).unwrap_or(false)).count() as u32).unwrap_or(0))
-    } else { None };
+        Some(
+            i.config
+                .get("portForwards")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter(|r| !r.get("ignore").and_then(|x| x.as_bool()).unwrap_or(false))
+                        .count() as u32
+                })
+                .unwrap_or(0),
+        )
+    } else {
+        None
+    };
     o.writable_mounts = if have_config {
-        Some(i.config.get("mounts").and_then(|v| v.as_array()).map(|a| a.iter().filter(|m| m.get("writable").and_then(|x| x.as_bool()).unwrap_or(false)).count() as u32).unwrap_or(0))
-    } else { None };
+        Some(
+            i.config
+                .get("mounts")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter(|m| m.get("writable").and_then(|x| x.as_bool()).unwrap_or(false))
+                        .count() as u32
+                })
+                .unwrap_or(0),
+        )
+    } else {
+        None
+    };
     o
 }
 
@@ -261,23 +385,53 @@ fn observe_vm2(instance: &str, template_digest: &str, base_image_digest: &str) -
 /// Codex must-fix #5). This binds evidence identity, but DOES NOT itself fence a provider reset:
 /// the off-host allocator/actuator must separately pin resource IDs and the allocation generation.
 fn physical_identity() -> anyhow::Result<String> {
-    if cfg!(target_os = "macos") && std::env::var_os("DS_SERVER_NUMBER").is_none() && std::env::var_os("DS_CHOKEPOINT_ID").is_none() {
+    if cfg!(target_os = "macos")
+        && std::env::var_os("DS_SERVER_NUMBER").is_none()
+        && std::env::var_os("DS_CHOKEPOINT_ID").is_none()
+    {
         return Ok(String::new());
     }
-    let server = std::env::var("DS_SERVER_NUMBER").context("DS_SERVER_NUMBER required on the dedicated host")?;
-    let choke = std::env::var("DS_CHOKEPOINT_ID").context("DS_CHOKEPOINT_ID required on the dedicated host")?;
-    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").context("host boot_id unavailable")?;
+    let server = std::env::var("DS_SERVER_NUMBER")
+        .context("DS_SERVER_NUMBER required on the dedicated host")?;
+    let choke = std::env::var("DS_CHOKEPOINT_ID")
+        .context("DS_CHOKEPOINT_ID required on the dedicated host")?;
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .context("host boot_id unavailable")?;
     physical_identity_parts(&server, &choke, boot.trim())
 }
 
 fn physical_identity_parts(server: &str, choke: &str, boot: &str) -> anyhow::Result<String> {
-    anyhow::ensure!(server.parse::<u64>().is_ok_and(|n| n > 0) && choke.parse::<u64>().is_ok_and(|n| n > 0), "physical resource IDs must be positive integers");
-    anyhow::ensure!(boot.len() == 36 && boot.bytes().enumerate().all(|(i, b)| if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b.is_ascii_hexdigit() }), "invalid host boot_id");
+    anyhow::ensure!(
+        server.parse::<u64>().is_ok_and(|n| n > 0) && choke.parse::<u64>().is_ok_and(|n| n > 0),
+        "physical resource IDs must be positive integers"
+    );
+    anyhow::ensure!(
+        boot.len() == 36
+            && boot
+                .bytes()
+                .enumerate()
+                .all(|(i, b)| if matches!(i, 8 | 13 | 18 | 23) {
+                    b == b'-'
+                } else {
+                    b.is_ascii_hexdigit()
+                }),
+        "invalid host boot_id"
+    );
     Ok(serde_json::to_string(&(server, choke, boot))?)
 }
 
 fn incarnation_of(instance: &str, obs: &Vm2Obs) -> anyhow::Result<String> {
-    Ok(sha256_hex(format!("{}|{}|{}|{}|{}", instance, obs.started_at.unwrap_or(0), obs.template_digest, obs.base_image_digest, physical_identity()?).as_bytes()))
+    Ok(sha256_hex(
+        format!(
+            "{}|{}|{}|{}|{}",
+            instance,
+            obs.started_at.unwrap_or(0),
+            obs.template_digest,
+            obs.base_image_digest,
+            physical_identity()?
+        )
+        .as_bytes(),
+    ))
 }
 
 /// stop -f, delete, confirm. Returns latency. Confirmation requires the recorded VMM pid to be gone
@@ -290,11 +444,15 @@ fn destroy_instance(instance: &str, pid: Option<u32>) -> anyhow::Result<Instant>
     // Instant of confirmed VMM death, so the caller measures the containment window ending exactly
     // there (not at cleanup/notify).
     let Some(p) = pid else {
-        return Err(anyhow!("cannot confirm termination of {instance}: no VMM pid recorded"));
+        return Err(anyhow!(
+            "cannot confirm termination of {instance}: no VMM pid recorded"
+        ));
     };
     let mut death = None;
     for _ in 0..50 {
-        let _ = Command::new("/bin/kill").args(["-9", &p.to_string()]).status();
+        let _ = Command::new("/bin/kill")
+            .args(["-9", &p.to_string()])
+            .status();
         if !pid_alive(p) {
             death = Some(Instant::now());
             break;
@@ -302,20 +460,40 @@ fn destroy_instance(instance: &str, pid: Option<u32>) -> anyhow::Result<Instant>
         std::thread::sleep(Duration::from_millis(100));
     }
     let Some(death) = death else {
-        return Err(anyhow!("VMM pid {p} for {instance} did not die under SIGKILL"));
+        return Err(anyhow!(
+            "VMM pid {p} for {instance} did not die under SIGKILL"
+        ));
     };
     // VMM dead (a dead process cannot egress). Now cut the gate (bounded pf reload) and tear down the
     // instance/disk — both off the containment-critical path — requiring the disk dir removed.
     let _ = gate_set(GateState::Cut);
-    let _ = run_ok_t({ let mut c = lima(); c.args(["stop", "-f", instance]); c }, "limactl stop", 10);
+    let _ = run_ok_t(
+        {
+            let mut c = lima();
+            c.args(["stop", "-f", instance]);
+            c
+        },
+        "limactl stop",
+        10,
+    );
     for _ in 0..10 {
-        let _ = run_ok_t({ let mut c = lima(); c.args(["delete", "-f", instance]); c }, "limactl delete", 10);
+        let _ = run_ok_t(
+            {
+                let mut c = lima();
+                c.args(["delete", "-f", instance]);
+                c
+            },
+            "limactl delete",
+            10,
+        );
         if !Path::new(LIMA_HOME).join(instance).exists() {
             return Ok(death);
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    Err(anyhow!("VMM {p} killed (contained) but instance {instance} disk dir not removed"))
+    Err(anyhow!(
+        "VMM {p} killed (contained) but instance {instance} disk dir not removed"
+    ))
 }
 
 // ------------------------------------------------------------------ run state
@@ -408,7 +586,8 @@ impl App {
         atomic_write_json(&self.record_path, &*self.record.lock().unwrap())
     }
     fn evidence_append(&self, kind: &str, data: serde_json::Value) {
-        let line = serde_json::json!({"ts": now_unix(), "src": "hostd", "kind": kind, "data": data});
+        let line =
+            serde_json::json!({"ts": now_unix(), "src": "hostd", "kind": kind, "data": data});
         // Fail-closed on lost mandatory evidence: if the store is over quota, on a different device,
         // or unwritable, trip the run rather than silently dropping (Codex end-of-P1 #6). fsync so a
         // crash cannot lose the tail. Does NOT hold the `live` mutex (the watchdog needs it).
@@ -436,8 +615,16 @@ impl App {
 }
 
 fn check_token(app: &App, h: &HeaderMap) -> Result<(), (StatusCode, String)> {
-    let ok = h.get("authorization").and_then(|v| v.to_str().ok()).map(|v| v.strip_prefix("Bearer ").unwrap_or("") == app.token).unwrap_or(false);
-    if ok { Ok(()) } else { Err((StatusCode::UNAUTHORIZED, "bad token".into())) }
+    let ok = h
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.strip_prefix("Bearer ").unwrap_or("") == app.token)
+        .unwrap_or(false);
+    if ok {
+        Ok(())
+    } else {
+        Err((StatusCode::UNAUTHORIZED, "bad token".into()))
+    }
 }
 
 // ------------------------------------------------------------------ VM2-facing HTTP (untrusted peer)
@@ -469,26 +656,42 @@ struct LeaseView {
     controller_pubkey: String,
 }
 
-async fn get_lease(State(app): State<Arc<App>>, h: HeaderMap) -> Result<Json<LeaseView>, (StatusCode, String)> {
+async fn get_lease(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+) -> Result<Json<LeaseView>, (StatusCode, String)> {
     check_token(&app, &h)?;
     let l = app.live.lock().unwrap();
-    let expired = l.deadline.as_ref().map(|d| d.expired(now_unix())).unwrap_or(true);
+    let expired = l
+        .deadline
+        .as_ref()
+        .map(|d| d.expired(now_unix()))
+        .unwrap_or(true);
     let view = LeaseView {
         run_id: app.run_id.clone(),
         epoch: l.deadline.as_ref().map(|d| d.epoch).unwrap_or(0),
         gate: l.gate,
-        lease: if expired || l.destroy_reason.is_some() { None } else { l.lease_signed.clone() },
+        lease: if expired || l.destroy_reason.is_some() {
+            None
+        } else {
+            l.lease_signed.clone()
+        },
         controller_pubkey: hex::encode(app.controller_pk.to_bytes()),
     };
     Ok(Json(view))
 }
 
-async fn post_report(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body::Bytes) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+async fn post_report(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_token(&app, &h)?;
     if body.len() > MAX_MSG_BYTES {
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "report too large".into()));
     }
-    let rep: Vm2Report = serde_json::from_slice(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let rep: Vm2Report =
+        serde_json::from_slice(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let (rep_seq, rep_run) = (rep.seq, rep.run_id.clone());
     // NEVER call evidence_append while holding `live`: evidence_append may request_destroy, which
     // re-locks `live` — a std Mutex is not reentrant, so that self-deadlocks (Codex end-of-P1 #6,
@@ -500,28 +703,46 @@ async fn post_report(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body
         } else {
             l.report_seq = rep.seq;
             let phase = rep.phase.clone();
-            l.last_report = Some(UntrustedReport { received_at: now_unix(), digest: sha256_hex(&body), body: rep });
+            l.last_report = Some(UntrustedReport {
+                received_at: now_unix(),
+                digest: sha256_hex(&body),
+                body: rep,
+            });
             Some((rep_seq, phase))
         }
     };
     match ok_vals {
         Some((seq, phase)) => {
-            app.evidence_append("vm2_report_ok", serde_json::json!({"seq": seq, "phase": phase}));
+            app.evidence_append(
+                "vm2_report_ok",
+                serde_json::json!({"seq": seq, "phase": phase}),
+            );
             Ok(Json(serde_json::json!({"ok": true})))
         }
         None => {
-            app.evidence_append("vm2_report_rejected", serde_json::json!({"seq": rep_seq, "run_id": rep_run}));
-            Err((StatusCode::CONFLICT, "wrong run or non-monotonic seq".into()))
+            app.evidence_append(
+                "vm2_report_rejected",
+                serde_json::json!({"seq": rep_seq, "run_id": rep_run}),
+            );
+            Err((
+                StatusCode::CONFLICT,
+                "wrong run or non-monotonic seq".into(),
+            ))
         }
     }
 }
 
-async fn post_log(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body::Bytes) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+async fn post_log(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_token(&app, &h)?;
     if body.len() > LOG_MAX_BYTES {
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "log event too large".into()));
     }
-    let ev: LogEvent = serde_json::from_slice(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let ev: LogEvent =
+        serde_json::from_slice(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let mut l = app.live.lock().unwrap();
     // token bucket: LOG_RATE_PER_S
     let dt = l.log_last.elapsed().as_secs_f64();
@@ -535,26 +756,54 @@ async fn post_log(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body::B
     // Capture the gap under the lock but append AFTER dropping it: evidence_append can
     // request_destroy → re-lock `live` (non-reentrant self-deadlock; Codex end-of-P1 #6, reproduced
     // via a log-sequence gap at quota).
-    let gap = if ev.seq != l.log_seq_expected { Some((l.log_seq_expected, ev.seq)) } else { None };
+    let gap = if ev.seq != l.log_seq_expected {
+        Some((l.log_seq_expected, ev.seq))
+    } else {
+        None
+    };
     l.log_seq_expected = ev.seq + 1;
     drop(l);
     if let Some((expected, got)) = gap {
-        app.evidence_append("vm2_log_gap", serde_json::json!({"expected": expected, "got": got}));
+        app.evidence_append(
+            "vm2_log_gap",
+            serde_json::json!({"expected": expected, "got": got}),
+        );
     }
     app.evidence_append("vm2_log", serde_json::to_value(&ev).unwrap());
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
-async fn post_defender(State(app): State<Arc<App>>, h: HeaderMap, Json(a): Json<DefenderAction>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+async fn post_defender(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+    Json(a): Json<DefenderAction>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_token(&app, &h)?;
     app.evidence_append("defender_action", serde_json::to_value(&a).unwrap());
     // Phase 2: SIGN the relay (controller↔hostd crosses a network) so the controller only accepts
     // authority-reducing actions from the real per-run hostd key.
-    let rep = DefenderReport { v: PROTO_V, kind: "defender_report".into(), run_id: app.run_id.clone(), aud: AUD_CONTROLLER.into(), incarnation: app.incarnation.clone(), issued_at: now_unix(), request_id: random_hex(32), action: a };
-    let r = app.http.post(format!("{}/defender", app.controller)).json(&app.signed(&rep)).send().await;
+    let rep = DefenderReport {
+        v: PROTO_V,
+        kind: "defender_report".into(),
+        run_id: app.run_id.clone(),
+        aud: AUD_CONTROLLER.into(),
+        incarnation: app.incarnation.clone(),
+        issued_at: now_unix(),
+        request_id: random_hex(32),
+        action: a,
+    };
+    let r = app
+        .http
+        .post(format!("{}/defender", app.controller))
+        .json(&app.signed(&rep))
+        .send()
+        .await;
     match r {
         Ok(resp) if resp.status().is_success() => Ok(Json(serde_json::json!({"ok": true}))),
-        Ok(resp) => Err((StatusCode::BAD_GATEWAY, format!("controller: {}", resp.status()))),
+        Ok(resp) => Err((
+            StatusCode::BAD_GATEWAY,
+            format!("controller: {}", resp.status()),
+        )),
         Err(e) => Err((StatusCode::BAD_GATEWAY, e.to_string())),
     }
 }
@@ -565,15 +814,26 @@ struct PrestageDone {
     image_digest: String,
 }
 
-async fn post_prestage_done(State(app): State<Arc<App>>, h: HeaderMap, Json(p): Json<PrestageDone>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+async fn post_prestage_done(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+    Json(p): Json<PrestageDone>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_token(&app, &h)?;
-    app.evidence_append("prestage_done", serde_json::json!({"manifest_digest": p.manifest_digest, "image_digest": p.image_digest}));
+    app.evidence_append(
+        "prestage_done",
+        serde_json::json!({"manifest_digest": p.manifest_digest, "image_digest": p.image_digest}),
+    );
     app.live.lock().unwrap().prestage_done = true;
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
 /// Inference chokepoint (Phase 1 stand-in for the off-host chokepoint). Exactly one operation.
-async fn chat(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body::Bytes) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, String)> {
+async fn chat(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, String)> {
     check_token(&app, &h)?;
     let deny = |app: &App, why: &str| {
         app.live.lock().unwrap().chokepoint.denied += 1;
@@ -588,13 +848,22 @@ async fn chat(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body::Bytes
     };
     let active = |app: &App| {
         let l = app.live.lock().unwrap();
-        !(l.deadline.as_ref().map(|d| d.expired(now_unix())).unwrap_or(true) || l.destroy_reason.is_some() || l.deadline.as_ref().map(|d| d.epoch).unwrap_or(0) < 1)
+        !(l.deadline
+            .as_ref()
+            .map(|d| d.expired(now_unix()))
+            .unwrap_or(true)
+            || l.destroy_reason.is_some()
+            || l.deadline.as_ref().map(|d| d.epoch).unwrap_or(0) < 1)
     };
     // active lease required at dispatch time (bind review to execution)
     if !active(&app) {
         return deny(&app, "no active eval lease");
     }
-    let _permit = app.ollama_sem.acquire().await.map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "closed".to_string()))?;
+    let _permit = app
+        .ollama_sem
+        .acquire()
+        .await
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "closed".to_string()))?;
     // re-check AFTER acquiring the permit: a queued request must not dispatch once its authority has
     // expired or the run is terminating while it waited (Codex end-of-P1 #4).
     if !active(&app) {
@@ -605,7 +874,10 @@ async fn chat(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body::Bytes
     // borrow() rather than only awaiting a change (Codex end-of-P1 #4, missed-notification window).
     let mut cancel = app.cancel_tx.subscribe();
     app.live.lock().unwrap().chokepoint.inference_requests += 1;
-    app.evidence_append("chokepoint_forward", serde_json::json!({"digest": sha256_hex(&body)}));
+    app.evidence_append(
+        "chokepoint_forward",
+        serde_json::json!({"digest": sha256_hex(&body)}),
+    );
     // The forward-evidence append can itself trip the run (evidence over quota → request_destroy).
     // Deny if the run is no longer active OR the cancel signal is already set.
     if !active(&app) || *cancel.borrow() {
@@ -617,9 +889,17 @@ async fn chat(State(app): State<Arc<App>>, h: HeaderMap, body: axum::body::Bytes
     let ollama = app.ollama.clone();
     let http = app.http.clone();
     let fetch = async move {
-        let resp = http.post(format!("{ollama}/api/chat")).timeout(Duration::from_secs(60)).json(&backend).send().await?;
+        let resp = http
+            .post(format!("{ollama}/api/chat"))
+            .timeout(Duration::from_secs(60))
+            .json(&backend)
+            .send()
+            .await?;
         let st = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-        let native = resp.json::<serde_json::Value>().await.unwrap_or(serde_json::json!({"error": "bad upstream body"}));
+        let native = resp
+            .json::<serde_json::Value>()
+            .await
+            .unwrap_or(serde_json::json!({"error": "bad upstream body"}));
         Ok::<_, reqwest::Error>((st, native))
     };
     let (st, native) = tokio::select! {
@@ -658,8 +938,22 @@ async fn renew_lease(app: &App) {
         }
     }
     let gate = gate_observe().0;
-    let req = LeaseRequest { v: PROTO_V, kind: "lease_request".into(), run_id: app.run_id.clone(), aud: AUD_CONTROLLER.into(), incarnation: app.incarnation.clone(), issued_at: now_unix(), epoch, gate };
-    let resp = app.http.post(format!("{}/lease", app.controller)).json(&app.signed(&req)).send().await;
+    let req = LeaseRequest {
+        v: PROTO_V,
+        kind: "lease_request".into(),
+        run_id: app.run_id.clone(),
+        aud: AUD_CONTROLLER.into(),
+        incarnation: app.incarnation.clone(),
+        issued_at: now_unix(),
+        epoch,
+        gate,
+    };
+    let resp = app
+        .http
+        .post(format!("{}/lease", app.controller))
+        .json(&app.signed(&req))
+        .send()
+        .await;
     let resp = match resp {
         Ok(r) if r.status().is_success() => r.json::<LeaseResponse>().await,
         Ok(r) => {
@@ -675,33 +969,40 @@ async fn renew_lease(app: &App) {
         Ok(LeaseResponse::Granted { lease }) => {
             let hw = app.record.lock().unwrap().lease_high_water;
             match lease.verify::<Lease>(&app.controller_pk, "lease", AUD_HOSTD) {
-                Ok(l) if l.run_id == app.run_id && l.incarnation == app.incarnation => match Deadline::accept(&l, hw, now_unix()) {
-                    Ok(d) => {
-                        {
-                            let mut r = app.record.lock().unwrap();
-                            r.lease_high_water = l.fencing_token;
-                            r.lease_wall_deadline = d.wall;
-                            r.epoch = l.epoch;
-                            if l.epoch >= 1 && r.state == HostRunState::Prestage {
-                                r.state = HostRunState::Eval;
+                Ok(l) if l.run_id == app.run_id && l.incarnation == app.incarnation => {
+                    match Deadline::accept(&l, hw, now_unix()) {
+                        Ok(d) => {
+                            {
+                                let mut r = app.record.lock().unwrap();
+                                r.lease_high_water = l.fencing_token;
+                                r.lease_wall_deadline = d.wall;
+                                r.epoch = l.epoch;
+                                if l.epoch >= 1 && r.state == HostRunState::Prestage {
+                                    r.state = HostRunState::Eval;
+                                }
                             }
+                            if let Err(e) = app.persist() {
+                                app.request_destroy(&format!("cannot persist lease: {e}"));
+                                return;
+                            }
+                            let mut live = app.live.lock().unwrap();
+                            live.deadline = Some(d);
+                            live.last_lease_at = Some(Instant::now());
+                            live.lease_signed = Some(lease);
                         }
-                        if let Err(e) = app.persist() {
-                            app.request_destroy(&format!("cannot persist lease: {e}"));
-                            return;
+                        Err(e) => {
+                            app.evidence_append("lease_rejected", serde_json::json!({"why": e}));
+                            warn!(why = %e, "lease rejected");
                         }
-                        let mut live = app.live.lock().unwrap();
-                        live.deadline = Some(d);
-                        live.last_lease_at = Some(Instant::now());
-                        live.lease_signed = Some(lease);
                     }
-                    Err(e) => {
-                        app.evidence_append("lease_rejected", serde_json::json!({"why": e}));
-                        warn!(why = %e, "lease rejected");
-                    }
-                },
-                Ok(_) => app.evidence_append("lease_rejected", serde_json::json!({"why": "wrong run/incarnation"})),
-                Err(e) => app.evidence_append("lease_rejected", serde_json::json!({"why": e.to_string()})),
+                }
+                Ok(_) => app.evidence_append(
+                    "lease_rejected",
+                    serde_json::json!({"why": "wrong run/incarnation"}),
+                ),
+                Err(e) => {
+                    app.evidence_append("lease_rejected", serde_json::json!({"why": e.to_string()}))
+                }
             }
         }
         Ok(LeaseResponse::Denied { order, reason }) => {
@@ -713,7 +1014,10 @@ async fn renew_lease(app: &App) {
                 }
                 _ => {
                     // an unverifiable denial is still a denial: the lease is simply not renewed
-                    app.evidence_append("lease_denied_unverified", serde_json::json!({"reason": reason}));
+                    app.evidence_append(
+                        "lease_denied_unverified",
+                        serde_json::json!({"reason": reason}),
+                    );
                 }
             }
         }
@@ -724,8 +1028,22 @@ async fn renew_lease(app: &App) {
 async fn answer_challenge(app: &App, template_digest: &str, base_digest: &str) {
     // Phase 2: SIGN the challenge request so an on-net party cannot flood /challenge to churn nonces
     // and force missed-challenge trips of a healthy run.
-    let req = ChallengeRequest { v: PROTO_V, kind: "challenge_request".into(), run_id: app.run_id.clone(), aud: AUD_CONTROLLER.into(), incarnation: app.incarnation.clone(), issued_at: now_unix(), request_id: random_hex(32) };
-    let ch = match app.http.post(format!("{}/challenge", app.controller)).json(&app.signed(&req)).send().await {
+    let req = ChallengeRequest {
+        v: PROTO_V,
+        kind: "challenge_request".into(),
+        run_id: app.run_id.clone(),
+        aud: AUD_CONTROLLER.into(),
+        incarnation: app.incarnation.clone(),
+        issued_at: now_unix(),
+        request_id: random_hex(32),
+    };
+    let ch = match app
+        .http
+        .post(format!("{}/challenge", app.controller))
+        .json(&app.signed(&req))
+        .send()
+        .await
+    {
         Ok(r) if r.status().is_success() => r.json::<Signed>().await.ok(),
         Ok(r) => {
             let st = r.status();
@@ -743,9 +1061,18 @@ async fn answer_challenge(app: &App, template_digest: &str, base_digest: &str) {
     };
     let Some(ch) = ch else { return };
     let ch = match ch.verify::<Challenge>(&app.controller_pk, "challenge", AUD_HOSTD) {
-        Ok(c) if c.run_id == app.run_id && c.incarnation == app.incarnation && now_unix().abs_diff(c.issued_at) <= CLOCK_SKEW_S => c,
+        Ok(c)
+            if c.run_id == app.run_id
+                && c.incarnation == app.incarnation
+                && now_unix().abs_diff(c.issued_at) <= CLOCK_SKEW_S =>
+        {
+            c
+        }
         other => {
-            app.evidence_append("challenge_rejected", serde_json::json!({"why": format!("{other:?}")}));
+            app.evidence_append(
+                "challenge_rejected",
+                serde_json::json!({"why": format!("{other:?}")}),
+            );
             return;
         }
     };
@@ -755,7 +1082,14 @@ async fn answer_challenge(app: &App, template_digest: &str, base_digest: &str) {
     let (watchdog, chokepoint, report) = {
         let l = app.live.lock().unwrap();
         (
-            WatchdogObs { lease_token: l.deadline.as_ref().map(|d| d.fencing_token).unwrap_or(0), deadline_remaining_ms: l.deadline.as_ref().map(|d| d.remaining_ms(now_unix())).unwrap_or(-1) },
+            WatchdogObs {
+                lease_token: l.deadline.as_ref().map(|d| d.fencing_token).unwrap_or(0),
+                deadline_remaining_ms: l
+                    .deadline
+                    .as_ref()
+                    .map(|d| d.remaining_ms(now_unix()))
+                    .unwrap_or(-1),
+            },
             l.chokepoint.clone(),
             l.last_report.clone(),
         )
@@ -769,16 +1103,28 @@ async fn answer_challenge(app: &App, template_digest: &str, base_digest: &str) {
         nonce: ch.nonce,
         measured_at: now_unix(),
         vm2,
-        gate: GateObs { state: gstate, bypass_packets: bypass },
+        gate: GateObs {
+            state: gstate,
+            bypass_packets: bypass,
+        },
         watchdog,
         chokepoint,
         untrusted_vm2_report: report,
     };
-    match app.http.post(format!("{}/evidence", app.controller)).json(&app.signed(&ev)).send().await {
+    match app
+        .http
+        .post(format!("{}/evidence", app.controller))
+        .json(&app.signed(&ev))
+        .send()
+        .await
+    {
         Ok(r) if r.status().is_success() => {
             if let Ok(j) = r.json::<serde_json::Value>().await {
                 if j["healthy"].as_bool() != Some(true) {
-                    let reason = j["reason"].as_str().unwrap_or("controller unhealthy verdict").to_string();
+                    let reason = j["reason"]
+                        .as_str()
+                        .unwrap_or("controller unhealthy verdict")
+                        .to_string();
                     app.evidence_append("evidence_verdict", j.clone());
                     app.request_destroy(&format!("evidence verdict: {reason}"));
                 }
@@ -802,7 +1148,12 @@ async fn do_destroy(app: &App, reason: &str) -> anyhow::Result<Instant> {
     let _ = app.persist();
     app.evidence_append("destroy_begin", serde_json::json!({"reason": reason}));
     // Prefer the pid captured at creation (confirm against the exact VMM), fall back to observation.
-    let pid = app.record.lock().unwrap().vz_pid.or_else(|| observe_vm2(&app.instance, "", "").pid);
+    let pid = app
+        .record
+        .lock()
+        .unwrap()
+        .vz_pid
+        .or_else(|| observe_vm2(&app.instance, "", "").pid);
     let mut death = None;
     for attempt in 1..=30 {
         match destroy_instance(&app.instance, pid) {
@@ -812,7 +1163,10 @@ async fn do_destroy(app: &App, reason: &str) -> anyhow::Result<Instant> {
             }
             Err(e) => {
                 error!(attempt, error = %e, "destroy failed; retrying (gate stays cut)");
-                app.evidence_append("destroy_retry", serde_json::json!({"attempt": attempt, "error": e.to_string()}));
+                app.evidence_append(
+                    "destroy_retry",
+                    serde_json::json!({"attempt": attempt, "error": e.to_string()}),
+                );
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
@@ -832,10 +1186,18 @@ async fn do_destroy(app: &App, reason: &str) -> anyhow::Result<Instant> {
         r.destroy_latency_ms = Some(lat_ms);
     }
     let _ = app.persist();
-    app.evidence_append("destroy_confirmed", serde_json::json!({"latency_ms": lat_ms}));
+    app.evidence_append(
+        "destroy_confirmed",
+        serde_json::json!({"latency_ms": lat_ms}),
+    );
     info!(latency_ms = lat_ms, "VM2 destroyed and confirmed");
     let t = serde_json::json!({"v": PROTO_V, "type": "terminated", "run_id": app.run_id, "aud": AUD_CONTROLLER, "incarnation": app.incarnation, "issued_at": now_unix(), "latency_ms": lat_ms});
-    let _ = app.http.post(format!("{}/terminated", app.controller)).json(&app.signed(&t)).send().await;
+    let _ = app
+        .http
+        .post(format!("{}/terminated", app.controller))
+        .json(&app.signed(&t))
+        .send()
+        .await;
     Ok(death)
 }
 
@@ -852,7 +1214,10 @@ struct CappedListener {
 }
 impl CappedListener {
     async fn bind(addr: (&str, u16), max_conns: usize) -> std::io::Result<Self> {
-        Ok(CappedListener { inner: tokio::net::TcpListener::bind(addr).await?, sem: Arc::new(tokio::sync::Semaphore::new(max_conns)) })
+        Ok(CappedListener {
+            inner: tokio::net::TcpListener::bind(addr).await?,
+            sem: Arc::new(tokio::sync::Semaphore::new(max_conns)),
+        })
     }
 }
 impl axum::serve::Listener for CappedListener {
@@ -860,9 +1225,22 @@ impl axum::serve::Listener for CappedListener {
     type Addr = std::net::SocketAddr;
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
-            let permit = self.sem.clone().acquire_owned().await.expect("connection semaphore never closed");
+            let permit = self
+                .sem
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("connection semaphore never closed");
             match self.inner.accept().await {
-                Ok((stream, addr)) => return (CappedStream { inner: stream, _permit: permit }, addr),
+                Ok((stream, addr)) => {
+                    return (
+                        CappedStream {
+                            inner: stream,
+                            _permit: permit,
+                        },
+                        addr,
+                    )
+                }
                 Err(_) => {
                     drop(permit);
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -881,21 +1259,39 @@ struct CappedStream {
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 impl AsyncRead for CappedStream {
-    fn poll_read(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
     }
 }
 impl AsyncWrite for CappedStream {
-    fn poll_write(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
     }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.get_mut().inner).poll_flush(cx)
     }
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
     }
-    fn poll_write_vectored(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, bufs: &[std::io::IoSlice<'_>]) -> Poll<std::io::Result<usize>> {
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
     }
     fn is_write_vectored(&self) -> bool {
@@ -928,9 +1324,21 @@ impl Drop for InstanceGuard {
             // Resolve the VMM pid WITHOUT depending on `limactl` enumeration (which may be the very
             // thing that is broken): the instance dir's vz.pid file, then the durable handoff (Codex
             // end-of-P1 #1).
-            let pid = self.pid
-                .or_else(|| std::fs::read_to_string(Path::new(LIMA_HOME).join(&self.instance).join("vz.pid")).ok().and_then(|s| s.trim().parse().ok()))
-                .or_else(|| read_json::<ActiveLease>(&active_path()).ok().flatten().and_then(|a| a.vz_pid));
+            let pid = self
+                .pid
+                .or_else(|| {
+                    std::fs::read_to_string(
+                        Path::new(LIMA_HOME).join(&self.instance).join("vz.pid"),
+                    )
+                    .ok()
+                    .and_then(|s| s.trim().parse().ok())
+                })
+                .or_else(|| {
+                    read_json::<ActiveLease>(&active_path())
+                        .ok()
+                        .flatten()
+                        .and_then(|a| a.vz_pid)
+                });
             // Remove the durable handoff ONLY on a confirmed teardown; on failure keep it so the
             // always-on guard daemon keeps retrying (do not orphan the instance).
             match destroy_instance(&self.instance, pid) {
@@ -961,7 +1369,12 @@ impl RunLock {
         const LOCK_EX: i32 = 2;
         const LOCK_NB: i32 = 4;
         let path = Path::new(STATE_DIR).join("run.lock");
-        let mut file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)?;
         let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
         anyhow::ensure!(rc == 0, "another run holds the host gate; one run per host");
         let _ = file.set_len(0);
@@ -994,7 +1407,9 @@ fn guard() -> anyhow::Result<()> {
                 if let Some(vz) = a.vz_pid {
                     if pid_alive(vz) {
                         warn!(instance = %a.instance, vz, "guard: handoff run dead/expired — immediate SIGKILL of the VMM");
-                        let _ = Command::new("/bin/kill").args(["-9", &vz.to_string()]).status();
+                        let _ = Command::new("/bin/kill")
+                            .args(["-9", &vz.to_string()])
+                            .status();
                     }
                 }
             }
@@ -1008,10 +1423,15 @@ fn guard() -> anyhow::Result<()> {
         let covered = |name: &str| matches!(&active, Some(a) if a.instance == name && pid_alive(a.run_pid) && now < a.wall_deadline);
         match listed {
             Ok(list) => {
-                for i in list.into_iter().filter(|i| i.name.starts_with("vm2-") && i.name != BASE_INSTANCE) {
+                for i in list
+                    .into_iter()
+                    .filter(|i| i.name.starts_with("vm2-") && i.name != BASE_INSTANCE)
+                {
                     if !covered(&i.name) {
                         warn!(instance = %i.name, ?active, "guard: eval VM2 without a live lease handoff — destroying");
-                        let pid = std::fs::read_to_string(Path::new(&i.dir).join("vz.pid")).ok().and_then(|s| s.trim().parse().ok())
+                        let pid = std::fs::read_to_string(Path::new(&i.dir).join("vz.pid"))
+                            .ok()
+                            .and_then(|s| s.trim().parse().ok())
                             .or_else(|| active.as_ref().and_then(|a| a.vz_pid));
                         if let Err(e) = destroy_instance(&i.name, pid) {
                             error!(instance = %i.name, error = %e, "guard: destroy failed; retrying");
@@ -1052,7 +1472,9 @@ fn cleanup() -> anyhow::Result<()> {
         .collect();
     let mut destroyed = 0;
     for i in &evals {
-        let pid = std::fs::read_to_string(Path::new(&i.dir).join("vz.pid")).ok().and_then(|s| s.trim().parse().ok());
+        let pid = std::fs::read_to_string(Path::new(&i.dir).join("vz.pid"))
+            .ok()
+            .and_then(|s| s.trim().parse().ok());
         warn!(instance = %i.name, status = %i.status, "unmanaged VM2 instance: destroying (fail-closed startup)");
         destroy_instance(&i.name, pid)?;
         destroyed += 1;
@@ -1060,23 +1482,52 @@ fn cleanup() -> anyhow::Result<()> {
     if destroyed == 0 {
         gate_set(GateState::Sealed)?;
     }
-    println!("cleanup: destroyed {destroyed} instance(s); gate {:?}", gate_observe().0);
+    println!(
+        "cleanup: destroyed {destroyed} instance(s); gate {:?}",
+        gate_observe().0
+    );
     Ok(())
 }
 
 fn provision_base(template: &Path, payload: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(LIMA_HOME)?;
-    let _ = Command::new("/usr/sbin/chown").args(["-R", &format!("{SERVICE_USER}:staff"), LIMA_HOME]).status();
+    let _ = Command::new("/usr/sbin/chown")
+        .args(["-R", &format!("{SERVICE_USER}:staff"), LIMA_HOME])
+        .status();
     // the service user cannot read Jean's home: stage the template and payload under STATE_DIR
     let stage = Path::new(STATE_DIR).join("stage");
     let _ = std::fs::remove_dir_all(&stage);
     std::fs::create_dir_all(&stage)?;
     std::fs::copy(template, stage.join("vm2.yaml"))?;
-    run_ok({ let mut c = Command::new("/bin/cp"); c.args(["-R", payload.to_str().unwrap(), stage.join("payload").to_str().unwrap()]); c }, "copy payload")?;
-    let _ = Command::new("/usr/sbin/chown").args(["-R", &format!("{SERVICE_USER}:staff"), stage.to_str().unwrap()]).status();
+    run_ok(
+        {
+            let mut c = Command::new("/bin/cp");
+            c.args([
+                "-R",
+                payload.to_str().unwrap(),
+                stage.join("payload").to_str().unwrap(),
+            ]);
+            c
+        },
+        "copy payload",
+    )?;
+    let _ = Command::new("/usr/sbin/chown")
+        .args([
+            "-R",
+            &format!("{SERVICE_USER}:staff"),
+            stage.to_str().unwrap(),
+        ])
+        .status();
     let template_digest = sha256_hex(&std::fs::read(stage.join("vm2.yaml"))?);
     if lima_list()?.iter().any(|i| i.name == BASE_INSTANCE) {
-        run_ok({ let mut c = lima(); c.args(["delete", "-f", BASE_INSTANCE]); c }, "delete old base")?;
+        run_ok(
+            {
+                let mut c = lima();
+                c.args(["delete", "-f", BASE_INSTANCE]);
+                c
+            },
+            "delete old base",
+        )?;
     }
     gate_set(GateState::Open)?;
     let res = (|| -> anyhow::Result<()> {
@@ -1084,17 +1535,74 @@ fn provision_base(template: &Path, payload: &Path) -> anyhow::Result<()> {
         // install-in-vm2.sh) BUILDS the VM1 browser image by booting a nested cloud-init VM — tens of
         // minutes. The bounded run_ok default (45s) is for the hot watchdog/gate/destroy paths, not
         // for one-off provisioning (Codex end-of-P1 #1 bounding must not strangle provisioning).
-        run_ok_t({ let mut c = lima(); c.args(["start", "--name", BASE_INSTANCE, "--tty=false", stage.join("vm2.yaml").to_str().unwrap()]); c }, "limactl start base", 600)?;
-        run_ok_t({ let mut c = lima(); c.args(["copy", "-r", stage.join("payload").to_str().unwrap(), &format!("{BASE_INSTANCE}:/tmp/payload")]); c }, "copy payload into base", 300)?;
-        run_ok_t({ let mut c = lima(); c.args(["shell", BASE_INSTANCE, "--", "sudo", "bash", "/tmp/payload/install-in-vm2.sh"]); c }, "install payload in base", 3000)?;
-        run_ok_t({ let mut c = lima(); c.args(["stop", BASE_INSTANCE]); c }, "stop base", 120)?;
+        run_ok_t(
+            {
+                let mut c = lima();
+                c.args([
+                    "start",
+                    "--name",
+                    BASE_INSTANCE,
+                    "--tty=false",
+                    stage.join("vm2.yaml").to_str().unwrap(),
+                ]);
+                c
+            },
+            "limactl start base",
+            600,
+        )?;
+        run_ok_t(
+            {
+                let mut c = lima();
+                c.args([
+                    "copy",
+                    "-r",
+                    stage.join("payload").to_str().unwrap(),
+                    &format!("{BASE_INSTANCE}:/tmp/payload"),
+                ]);
+                c
+            },
+            "copy payload into base",
+            300,
+        )?;
+        run_ok_t(
+            {
+                let mut c = lima();
+                c.args([
+                    "shell",
+                    BASE_INSTANCE,
+                    "--",
+                    "sudo",
+                    "bash",
+                    "/tmp/payload/install-in-vm2.sh",
+                ]);
+                c
+            },
+            "install payload in base",
+            3000,
+        )?;
+        run_ok_t(
+            {
+                let mut c = lima();
+                c.args(["stop", BASE_INSTANCE]);
+                c
+            },
+            "stop base",
+            120,
+        )?;
         Ok(())
     })();
     gate_set(GateState::Sealed)?;
     res?;
     let disk = Path::new(LIMA_HOME).join(BASE_INSTANCE).join("basedisk");
-    let base_digest = if disk.exists() { sha256_file(&disk)? } else { "none".into() };
-    atomic_write_json(&Path::new(STATE_DIR).join("base.json"), &serde_json::json!({"template_digest": template_digest, "base_image_digest": base_digest, "provisioned_at": now_unix()}))?;
+    let base_digest = if disk.exists() {
+        sha256_file(&disk)?
+    } else {
+        "none".into()
+    };
+    atomic_write_json(
+        &Path::new(STATE_DIR).join("base.json"),
+        &serde_json::json!({"template_digest": template_digest, "base_image_digest": base_digest, "provisioned_at": now_unix()}),
+    )?;
     println!("base provisioned: template {template_digest} base_image {base_digest}");
     Ok(())
 }
@@ -1108,13 +1616,28 @@ fn sha256_file(p: &Path) -> anyhow::Result<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run(run_id: String, controller: String, controller_pubkey: String, model: String, ollama: String, max_run_s: u64, template: PathBuf) -> anyhow::Result<()> {
-    let key = key_from_hex(&std::fs::read_to_string(Path::new(STATE_DIR).join("keys/hostd.key")).context("run `hostd keygen` first")?)?;
+async fn run(
+    run_id: String,
+    controller: String,
+    controller_pubkey: String,
+    model: String,
+    ollama: String,
+    max_run_s: u64,
+    template: PathBuf,
+) -> anyhow::Result<()> {
+    let key = key_from_hex(
+        &std::fs::read_to_string(Path::new(STATE_DIR).join("keys/hostd.key"))
+            .context("run `hostd keygen` first")?,
+    )?;
     let controller_pk = pubkey_from_hex(&controller_pubkey)?;
-    let base: serde_json::Value = read_json(&Path::new(STATE_DIR).join("base.json"))?.ok_or_else(|| anyhow!("run `hostd provision-base` first"))?;
+    let base: serde_json::Value = read_json(&Path::new(STATE_DIR).join("base.json"))?
+        .ok_or_else(|| anyhow!("run `hostd provision-base` first"))?;
     let template_digest_now = sha256_hex(&std::fs::read(&template)?);
     let template_digest = base["template_digest"].as_str().unwrap_or("").to_string();
-    anyhow::ensure!(template_digest == template_digest_now, "template changed since base was provisioned; re-provision");
+    anyhow::ensure!(
+        template_digest == template_digest_now,
+        "template changed since base was provisioned; re-provision"
+    );
     let base_digest = base["base_image_digest"].as_str().unwrap_or("").to_string();
 
     // Exclusive host-gate ownership (one run per host) + fail-closed startup: nothing survives.
@@ -1123,9 +1646,14 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
     let _ = std::fs::remove_file(active_path());
     std::fs::create_dir_all(Path::new(STATE_DIR).join("runs"))?;
     std::fs::create_dir_all(Path::new(STATE_DIR).join("evidence"))?;
-    let record_path = Path::new(STATE_DIR).join("runs").join(format!("{run_id}.json"));
+    let record_path = Path::new(STATE_DIR)
+        .join("runs")
+        .join(format!("{run_id}.json"));
     if let Some(old) = read_json::<HostRunRecord>(&record_path)? {
-        anyhow::bail!("run {run_id} already has a record in state {:?}; a run gets one incarnation", old.state);
+        anyhow::bail!(
+            "run {run_id} already has a record in state {:?}; a run gets one incarnation",
+            old.state
+        );
     }
     let instance = format!("vm2-{}", run_id.to_lowercase());
     let token = random_hex(32);
@@ -1134,37 +1662,86 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
     // guard daemon does not destroy the freshly-cloned VM2 during bring-up (before the main loop
     // starts refreshing it). run_pid lets the guard detect this process dying at any point.
     const SETUP_GRACE_S: u64 = 180;
-    let _ = atomic_write_json(&active_path(), &ActiveLease {
-        instance: instance.clone(), incarnation: String::new(), vz_pid: None,
-        wall_deadline: now_unix() + SETUP_GRACE_S, run_pid: std::process::id(), updated_at: now_unix(),
-    });
+    let _ = atomic_write_json(
+        &active_path(),
+        &ActiveLease {
+            instance: instance.clone(),
+            incarnation: String::new(),
+            vz_pid: None,
+            wall_deadline: now_unix() + SETUP_GRACE_S,
+            run_pid: std::process::id(),
+            updated_at: now_unix(),
+        },
+    );
 
     // Gate OPEN for the trusted setup window (clone -> start -> enroll -> prestage): limactl start
     // blocks on guest SSH (port 60022), and prestage fetches packages. No untrusted code runs until
     // VM1 boots, which is only after the eval seal. Sealed is re-applied before the eval lease.
     gate_set(GateState::Open)?;
     info!(%instance, "cloning base");
-    run_ok_t({ let mut c = lima(); c.args(["clone", "--tty=false", BASE_INSTANCE, &instance]); c }, "limactl clone", 300)?;
+    run_ok_t(
+        {
+            let mut c = lima();
+            c.args(["clone", "--tty=false", BASE_INSTANCE, &instance]);
+            c
+        },
+        "limactl clone",
+        300,
+    )?;
     // Arm the cleanup guard the instant the clone exists, BEFORE the fallible start — so a start
     // that ultimately fails (or any early return / panic afterwards) still tears the clone down
     // (Codex end-of-P1 #1). Its Drop resolves the VMM pid from the instance dir if we don't yet
     // have it. pid is filled in after the post-start observation below.
-    let mut inst_guard = InstanceGuard { instance: instance.clone(), pid: None, armed: true };
+    let mut inst_guard = InstanceGuard {
+        instance: instance.clone(),
+        pid: None,
+        armed: true,
+    };
     let t0 = Instant::now();
     // `limactl start` can transiently fail right after a clone ("Using the existing instance …")
     // before the clone's state settles; retry once after a short settle.
-    if let Err(e) = run_ok_t({ let mut c = lima(); c.args(["start", "--tty=false", &instance]); c }, "limactl start", 300) {
+    if let Err(e) = run_ok_t(
+        {
+            let mut c = lima();
+            c.args(["start", "--tty=false", &instance]);
+            c
+        },
+        "limactl start",
+        300,
+    ) {
         warn!(error = %e, "limactl start failed; settling and retrying once");
         std::thread::sleep(Duration::from_secs(3));
-        run_ok_t({ let mut c = lima(); c.args(["start", "--tty=false", &instance]); c }, "limactl start (retry)", 300)?;
+        run_ok_t(
+            {
+                let mut c = lima();
+                c.args(["start", "--tty=false", &instance]);
+                c
+            },
+            "limactl start (retry)",
+            300,
+        )?;
     }
     info!(boot_ms = t0.elapsed().as_millis() as u64, "VM2 started");
     let obs = observe_vm2(&instance, &template_digest, &base_digest);
     inst_guard.pid = obs.pid;
-    anyhow::ensure!(obs.running == Some(true), "VM2 not observed running after start: {obs:?}");
+    anyhow::ensure!(
+        obs.running == Some(true),
+        "VM2 not observed running after start: {obs:?}"
+    );
     let incarnation = incarnation_of(&instance, &obs)?;
 
-    let record = HostRunRecord { run_id: run_id.clone(), instance: instance.clone(), incarnation: incarnation.clone(), state: HostRunState::Starting, vz_pid: obs.pid, lease_high_water: 0, lease_wall_deadline: 0, epoch: 0, reasons: vec![], destroy_latency_ms: None };
+    let record = HostRunRecord {
+        run_id: run_id.clone(),
+        instance: instance.clone(),
+        incarnation: incarnation.clone(),
+        state: HostRunState::Starting,
+        vz_pid: obs.pid,
+        lease_high_water: 0,
+        lease_wall_deadline: 0,
+        epoch: 0,
+        reasons: vec![],
+        destroy_latency_ms: None,
+    };
     atomic_write_json(&record_path, &record)?;
     let app = Arc::new(App {
         run_id: run_id.clone(),
@@ -1178,23 +1755,68 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
         ollama,
         // One fresh TCP connection per operation: a pooled socket must never remain stranded
         // across a gate transition. HTTP/1 prevents multiplexed reuse; never retry a dispatch.
-        http: reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none())
-            .pool_max_idle_per_host(0).http1_only().retry(reqwest::retry::never())
-            .timeout(Duration::from_secs(5)).build()?,
+        http: reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .pool_max_idle_per_host(0)
+            .http1_only()
+            .retry(reqwest::retry::never())
+            .timeout(Duration::from_secs(5))
+            .build()?,
         record_path: record_path.clone(),
-        evidence: evidence::EvidenceStore::new(Path::new(STATE_DIR).join("evidence").join(format!("{run_id}.jsonl")), EVIDENCE_QUOTA_BYTES),
-        live: Mutex::new(Live { deadline: None, last_lease_at: None, lease_signed: None, gate: GateState::Sealed, last_report: None, report_seq: 0, prestage_done: false, log_seq_expected: 0, log_tokens: LOG_RATE_PER_S as f64, log_last: Instant::now(), log_dropped: 0, chokepoint: ChokepointObs::default(), destroy_reason: None }),
+        evidence: evidence::EvidenceStore::new(
+            Path::new(STATE_DIR)
+                .join("evidence")
+                .join(format!("{run_id}.jsonl")),
+            EVIDENCE_QUOTA_BYTES,
+        ),
+        live: Mutex::new(Live {
+            deadline: None,
+            last_lease_at: None,
+            lease_signed: None,
+            gate: GateState::Sealed,
+            last_report: None,
+            report_seq: 0,
+            prestage_done: false,
+            log_seq_expected: 0,
+            log_tokens: LOG_RATE_PER_S as f64,
+            log_last: Instant::now(),
+            log_dropped: 0,
+            chokepoint: ChokepointObs::default(),
+            destroy_reason: None,
+        }),
         record: Mutex::new(record),
         ollama_sem: tokio::sync::Semaphore::new(1),
         admission: tokio::sync::Semaphore::new(8),
         cancel_tx: tokio::sync::watch::channel(false).0,
     });
-    app.evidence_append("run_start", serde_json::json!({"instance": instance, "incarnation": incarnation, "vm2": obs}));
+    app.evidence_append(
+        "run_start",
+        serde_json::json!({"instance": instance, "incarnation": incarnation, "vm2": obs}),
+    );
 
     // Enroll.
-    let e = Enroll { v: PROTO_V, kind: "enroll".into(), run_id: run_id.clone(), aud: AUD_CONTROLLER.into(), incarnation: incarnation.clone(), issued_at: now_unix(), vm2: obs.clone() };
-    let resp = app.http.post(format!("{controller}/enroll")).json(&app.signed(&e)).send().await.context("enroll")?;
-    anyhow::ensure!(resp.status().is_success(), "enroll refused: {}", resp.text().await.unwrap_or_default());
+    let e = Enroll {
+        v: PROTO_V,
+        kind: "enroll".into(),
+        run_id: run_id.clone(),
+        aud: AUD_CONTROLLER.into(),
+        incarnation: incarnation.clone(),
+        issued_at: now_unix(),
+        vm2: obs.clone(),
+    };
+    let resp = app
+        .http
+        .post(format!("{controller}/enroll"))
+        .json(&app.signed(&e))
+        .send()
+        .await
+        .context("enroll")?;
+    anyhow::ensure!(
+        resp.status().is_success(),
+        "enroll refused: {}",
+        resp.text().await.unwrap_or_default()
+    );
     let er: serde_json::Value = resp.json().await?;
     if er.get("order").map(|o| !o.is_null()).unwrap_or(false) {
         app.request_destroy("controller refused enrollment");
@@ -1223,7 +1845,9 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
 
     // First lease (prestage epoch 0) before anything runs in VM2.
     renew_lease(&app).await;
-    if app.live.lock().unwrap().deadline.is_none() && app.live.lock().unwrap().destroy_reason.is_none() {
+    if app.live.lock().unwrap().deadline.is_none()
+        && app.live.lock().unwrap().destroy_reason.is_none()
+    {
         app.request_destroy("no initial lease");
     }
     if app.live.lock().unwrap().destroy_reason.is_none() {
@@ -1234,11 +1858,51 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
         }
         app.persist()?;
         let cfg = format!("RUN_ID={run_id}\nTOKEN={token}\nHOSTD=http://192.168.5.2:{HOSTD_PORT}\nCONTROLLER_PUBKEY={controller_pubkey}\nMODEL={}\n", app.model);
-        run_ok({ let mut c = lima(); c.args(["shell", &instance, "--", "sudo", "bash", "-c", &format!("umask 077; printf '%s' '{}' > /etc/deadswitch/run.env", cfg.replace('\'', ""))]); c }, "write run.env")?;
+        run_ok(
+            {
+                let mut c = lima();
+                c.args([
+                    "shell",
+                    &instance,
+                    "--",
+                    "sudo",
+                    "bash",
+                    "-c",
+                    &format!(
+                        "umask 077; printf '%s' '{}' > /etc/deadswitch/run.env",
+                        cfg.replace('\'', "")
+                    ),
+                ]);
+                c
+            },
+            "write run.env",
+        )?;
         gate_set(GateState::Open)?;
         app.live.lock().unwrap().gate = GateState::Open;
-        app.evidence_append("gate", serde_json::json!({"state": "open", "why": "prestage"}));
-        run_ok({ let mut c = lima(); c.args(["shell", &instance, "--", "sudo", "systemd-run", "--unit=deadswitch-supervisor", "--property=KillMode=control-group", "/usr/local/bin/deadswitch-supervisor", "run", "--env-file", "/etc/deadswitch/run.env"]); c }, "start supervisor")?;
+        app.evidence_append(
+            "gate",
+            serde_json::json!({"state": "open", "why": "prestage"}),
+        );
+        run_ok(
+            {
+                let mut c = lima();
+                c.args([
+                    "shell",
+                    &instance,
+                    "--",
+                    "sudo",
+                    "systemd-run",
+                    "--unit=deadswitch-supervisor",
+                    "--property=KillMode=control-group",
+                    "/usr/local/bin/deadswitch-supervisor",
+                    "run",
+                    "--env-file",
+                    "/etc/deadswitch/run.env",
+                ]);
+                c
+            },
+            "start supervisor",
+        )?;
         app.evidence_append("supervisor_started", serde_json::json!({}));
     }
 
@@ -1252,8 +1916,21 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
         // deadline, this run's pid. If this process dies, the guard sees a dead run_pid / stale file
         // and destroys VM2 (crash survival).
         {
-            let (dl, pid) = { let l = app.live.lock().unwrap(); (l.deadline.as_ref().map(|d| d.wall), app.record.lock().unwrap().vz_pid) };
-            let al = ActiveLease { instance: instance.clone(), incarnation: incarnation.clone(), vz_pid: pid, wall_deadline: dl.unwrap_or(0), run_pid: std::process::id(), updated_at: now_unix() };
+            let (dl, pid) = {
+                let l = app.live.lock().unwrap();
+                (
+                    l.deadline.as_ref().map(|d| d.wall),
+                    app.record.lock().unwrap().vz_pid,
+                )
+            };
+            let al = ActiveLease {
+                instance: instance.clone(),
+                incarnation: incarnation.clone(),
+                vz_pid: pid,
+                wall_deadline: dl.unwrap_or(0),
+                run_pid: std::process::id(),
+                updated_at: now_unix(),
+            };
             let _ = atomic_write_json(&active_path(), &al);
         }
         // watchdog: both clocks
@@ -1261,7 +1938,9 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
             let l = app.live.lock().unwrap();
             match (&l.deadline, &l.destroy_reason) {
                 (_, Some(r)) => (true, r.clone()),
-                (Some(d), None) if d.expired(now_unix()) => (true, "lease expired (watchdog)".into()),
+                (Some(d), None) if d.expired(now_unix()) => {
+                    (true, "lease expired (watchdog)".into())
+                }
                 (None, None) => (true, "no lease".into()),
                 _ => (false, String::new()),
             }
@@ -1291,16 +1970,21 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
                 // Both figures END at confirmed VMM death (not cleanup/notify): since detection, and
                 // since the last accepted lease renewal (the true containment-exposure window, which
                 // includes any stalled detection) (Codex end-of-P1 #1).
-                let since_detection_ms = death.saturating_duration_since(detected_at).as_millis() as u64;
-                let since_renewal_ms = last_lease_at.map(|t| death.saturating_duration_since(t).as_millis() as u64);
+                let since_detection_ms =
+                    death.saturating_duration_since(detected_at).as_millis() as u64;
+                let since_renewal_ms =
+                    last_lease_at.map(|t| death.saturating_duration_since(t).as_millis() as u64);
                 const CONTAINMENT_BOUND_MS: u64 = 25_000; // §2 declared bound (Mac profile)
-                app.evidence_append("containment_latency", serde_json::json!({
-                    "since_last_renewal_ms": since_renewal_ms,
-                    "since_detection_ms": since_detection_ms,
-                    "bound_ms": CONTAINMENT_BOUND_MS,
-                    "within_bound": since_renewal_ms.map(|m| m <= CONTAINMENT_BOUND_MS),
-                    "reason": reason,
-                }));
+                app.evidence_append(
+                    "containment_latency",
+                    serde_json::json!({
+                        "since_last_renewal_ms": since_renewal_ms,
+                        "since_detection_ms": since_detection_ms,
+                        "bound_ms": CONTAINMENT_BOUND_MS,
+                        "within_bound": since_renewal_ms.map(|m| m <= CONTAINMENT_BOUND_MS),
+                        "reason": reason,
+                    }),
+                );
                 info!(since_renewal_ms = ?since_renewal_ms, since_detection_ms, "containment complete");
                 inst_guard.armed = false; // confirmed gone — safe to disarm the cleanup guard
                 let _ = std::fs::remove_file(active_path());
@@ -1308,8 +1992,15 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
                 // VM2 is destroyed, but we exit non-zero so the run is reported as out-of-spec.
                 if let Some(m) = since_renewal_ms {
                     if m > CONTAINMENT_BOUND_MS {
-                        error!(since_renewal_ms = m, bound_ms = CONTAINMENT_BOUND_MS, "containment latency exceeded declared bound");
-                        app.evidence_append("containment_bound_exceeded", serde_json::json!({"since_last_renewal_ms": m}));
+                        error!(
+                            since_renewal_ms = m,
+                            bound_ms = CONTAINMENT_BOUND_MS,
+                            "containment latency exceeded declared bound"
+                        );
+                        app.evidence_append(
+                            "containment_bound_exceeded",
+                            serde_json::json!({"since_last_renewal_ms": m}),
+                        );
                         anyhow::bail!("containment latency {m}ms exceeded declared bound {CONTAINMENT_BOUND_MS}ms");
                     }
                 }
@@ -1332,15 +2023,27 @@ async fn run(run_id: String, controller: String, controller_pubkey: String, mode
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?)).init();
-    anyhow::ensure!(unsafe { libc_geteuid() } == 0, "hostd must run as root (sudo -n /usr/local/sbin/deadswitch-hostd ...)");
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
+        )
+        .init();
+    anyhow::ensure!(
+        unsafe { libc_geteuid() } == 0,
+        "hostd must run as root (sudo -n /usr/local/sbin/deadswitch-hostd ...)"
+    );
     std::fs::create_dir_all(STATE_DIR)?;
     let cmd = Args::parse().cmd;
     anyhow::ensure!(cfg!(target_os = "macos") || matches!(cmd, Cmd::Keygen), "Linux VM2 lifecycle/nft observation backend is not implemented; refusing to run the Mac profile on Linux");
     match cmd {
         Cmd::Keygen => keygen(),
         Cmd::Gate { state } => {
-            let s = match state.as_str() { "open" => GateState::Open, "sealed" => GateState::Sealed, "cut" => GateState::Cut, _ => anyhow::bail!("open|sealed|cut") };
+            let s = match state.as_str() {
+                "open" => GateState::Open,
+                "sealed" => GateState::Sealed,
+                "cut" => GateState::Cut,
+                _ => anyhow::bail!("open|sealed|cut"),
+            };
             gate_set(s)?;
             let (st, n) = gate_observe();
             println!("gate {:?} bypass_packets {:?}", st, n);
@@ -1349,7 +2052,26 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Cleanup => cleanup(),
         Cmd::Guard => guard(),
         Cmd::ProvisionBase { template, payload } => provision_base(&template, &payload),
-        Cmd::Run { run_id, controller, controller_pubkey, model, ollama, max_run_s, template } => run(run_id, controller, controller_pubkey, model, ollama, max_run_s, template).await,
+        Cmd::Run {
+            run_id,
+            controller,
+            controller_pubkey,
+            model,
+            ollama,
+            max_run_s,
+            template,
+        } => {
+            run(
+                run_id,
+                controller,
+                controller_pubkey,
+                model,
+                ollama,
+                max_run_s,
+                template,
+            )
+            .await
+        }
     }
 }
 
@@ -1369,12 +2091,21 @@ mod physical_identity_tests {
         let boot = "11111111-2222-3333-4444-555555555555";
         let identity = physical_identity_parts("123", "456", boot).unwrap();
         for (server, choke, generation) in [
-            ("124", "456", boot), ("123", "457", boot),
+            ("124", "456", boot),
+            ("123", "457", boot),
             ("123", "456", "11111111-2222-3333-4444-555555555556"),
         ] {
-            assert_ne!(physical_identity_parts(server, choke, generation).unwrap(), identity);
+            assert_ne!(
+                physical_identity_parts(server, choke, generation).unwrap(),
+                identity
+            );
         }
-        for (server, choke, generation) in [("", "456", boot), ("123", "0", boot), ("123", "456", ""), ("123", "456", "not-a-boot-id")] {
+        for (server, choke, generation) in [
+            ("", "456", boot),
+            ("123", "0", boot),
+            ("123", "456", ""),
+            ("123", "456", "not-a-boot-id"),
+        ] {
             assert!(physical_identity_parts(server, choke, generation).is_err());
         }
     }

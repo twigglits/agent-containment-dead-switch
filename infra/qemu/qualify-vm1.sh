@@ -42,7 +42,7 @@ echo "DEPS OK: $(grep -m1 'DEPS_IMAGE mounted ro' "$S/serial.log")"
 # specific interpreter-missing abort — proving VM1 actually exercised and correctly refused an
 # incomplete image, not silently ran an unverified path (Codex end-of-P1 #6). Full harness EXECUTION
 # with a real prestaged venv is validated by the acceptance eval run, not here.
-for i in $(seq 1 300); do grep -q 'HARNESS_DONE' "$S/serial.log" 2>/dev/null && break; kill -0 "$QP" 2>/dev/null || break; sleep 0.1; done
+for _ in $(seq 1 300); do grep -q 'HARNESS_DONE' "$S/serial.log" 2>/dev/null && break; kill -0 "$QP" 2>/dev/null || break; sleep 0.1; done
 grep -qE 'HARNESS_DONE.*prestaged interpreter.*missing' "$S/serial.log" || { echo "FAIL: VM1 did not fail-closed on the venv-less deps image (expected interpreter-missing abort)"; grep -a HARNESS_DONE "$S/serial.log" | tail -3; sudo kill -9 "$QP"; exit 1; }
 echo "FAIL-CLOSED OK: harness correctly refused the incomplete deps image"
 # Send the capabilities handshake + one command TAGGED with a unique id, and return the reply
@@ -102,6 +102,6 @@ done
 # ARM 'virtualization=on' machine option (which is what would expose EL2 to the guest on aarch64).
 if ps -o command= -p "$QP" | grep -q 'virtualization=on'; then echo "FAIL: VM1 machine exposes ARM virtualization=on (nested virt to VM1)"; sudo kill -9 "$QP"; exit 1; fi
 echo "vm1 nested-virt: -cpu host, no +vmx/+svm, no machine virtualization=on -> EL2 not exposed to VM1 (in-guest /dev/kvm-absent asserted by acceptance T7)"
-sudo kill -9 "$QP"; for i in 1 2 3 4 5; do kill -0 "$QP" 2>/dev/null || break; sleep 0.2; done
+sudo kill -9 "$QP"; for _ in 1 2 3 4 5; do kill -0 "$QP" 2>/dev/null || break; sleep 0.2; done
 kill -0 "$QP" 2>/dev/null && { echo "KILL FAILED"; exit 1; } || echo "KILL OK"
 echo QUALIFIED

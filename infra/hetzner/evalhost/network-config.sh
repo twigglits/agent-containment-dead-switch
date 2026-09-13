@@ -12,7 +12,7 @@ ds_same_setting() {
   [ -n "$value" ] || { echo "$canonical must not be empty" >&2; return 1; }
   printf -v "$canonical" '%s' "$value"
   printf -v "$legacy" '%s' "$value"
-  export "$canonical" "$legacy"
+  export "${canonical?}" "${legacy?}"
 }
 
 ds_same_setting WORKLOAD_IFACE DS_TAP dstap0

@@ -30,7 +30,12 @@ pub struct Vmi {
 
 impl Vmi {
     pub fn new(kmem: Kmem, work: &std::path::Path) -> Self {
-        Vmi { kmem, baseline: None, last: VmiResult::Unmeasured, work: work.into() }
+        Vmi {
+            kmem,
+            baseline: None,
+            last: VmiResult::Unmeasured,
+            work: work.into(),
+        }
     }
 
     /// Pause vCPUs, pmemsave the code+rodata physical ranges, resume (only if `resume_ok`), hash.
@@ -43,14 +48,18 @@ impl Vmi {
     fn measure_inner(&mut self, vm: &mut Vm1, resume_ok: impl Fn() -> bool) -> VmiResult {
         let k = self.kmem.clone();
         if k.code_end <= k.code_start || k.rodata_end <= k.rodata_start {
-            return VmiResult::Unknown { reason: "implausible kernel physical ranges".into() };
+            return VmiResult::Unknown {
+                reason: "implausible kernel physical ranges".into(),
+            };
         }
         let text_len = k.code_end - k.code_start + 1;
         let ro_len = k.rodata_end - k.rodata_start + 1;
         let text_f = self.work.join("vmi.text");
         let ro_f = self.work.join("vmi.rodata");
         if let Err(e) = vm.pause() {
-            return VmiResult::Unknown { reason: format!("pause failed: {e}") };
+            return VmiResult::Unknown {
+                reason: format!("pause failed: {e}"),
+            };
         }
         let dump = (|| -> anyhow::Result<(String, String)> {
             vm.pmemsave(k.code_start, text_len, &text_f)?;
@@ -64,20 +73,36 @@ impl Vmi {
             if let Err(e) = vm.resume() {
                 let _ = std::fs::remove_file(&text_f);
                 let _ = std::fs::remove_file(&ro_f);
-                return VmiResult::Unknown { reason: format!("resume failed: {e}") };
+                return VmiResult::Unknown {
+                    reason: format!("resume failed: {e}"),
+                };
             }
         }
         let _ = std::fs::remove_file(&text_f);
         let _ = std::fs::remove_file(&ro_f);
         let (text_sha, ro_sha) = match dump {
             Ok(v) => v,
-            Err(e) => return VmiResult::Unknown { reason: format!("pmemsave/hash: {e}") },
+            Err(e) => {
+                return VmiResult::Unknown {
+                    reason: format!("pmemsave/hash: {e}"),
+                }
+            }
         };
         let now = now_unix();
         match &self.baseline {
             None => {
-                self.baseline = Some(Baseline { text_sha256: text_sha.clone(), rodata_sha256: ro_sha.clone(), text_bytes: text_len, rodata_bytes: ro_len, measured_at: now });
-                VmiResult::Healthy { text_sha256: text_sha, rodata_sha256: ro_sha, measured_at: now }
+                self.baseline = Some(Baseline {
+                    text_sha256: text_sha.clone(),
+                    rodata_sha256: ro_sha.clone(),
+                    text_bytes: text_len,
+                    rodata_bytes: ro_len,
+                    measured_at: now,
+                });
+                VmiResult::Healthy {
+                    text_sha256: text_sha,
+                    rodata_sha256: ro_sha,
+                    measured_at: now,
+                }
             }
             Some(b) => {
                 // Scoped-VMI trip decision (Codex F7): the kernel legitimately self-patches its
@@ -88,12 +113,24 @@ impl Vmi {
                 // as evidence (`text_drift`) but is NOT a trip; distinguishing malicious from
                 // legitimate .text edits needs a patch-site allowlist (deferred, stated blind spot).
                 if ro_sha != b.rodata_sha256 {
-                    VmiResult::Tampered { region: "kernel_rodata".into(), expected: b.rodata_sha256.clone(), actual: ro_sha, measured_at: now }
+                    VmiResult::Tampered {
+                        region: "kernel_rodata".into(),
+                        expected: b.rodata_sha256.clone(),
+                        actual: ro_sha,
+                        measured_at: now,
+                    }
                 } else {
                     if text_sha != b.text_sha256 {
-                        tracing::info!(region = "kernel_code", "text drift (expected: kernel self-patching); not a trip");
+                        tracing::info!(
+                            region = "kernel_code",
+                            "text drift (expected: kernel self-patching); not a trip"
+                        );
                     }
-                    VmiResult::Healthy { text_sha256: text_sha, rodata_sha256: ro_sha, measured_at: now }
+                    VmiResult::Healthy {
+                        text_sha256: text_sha,
+                        rodata_sha256: ro_sha,
+                        measured_at: now,
+                    }
                 }
             }
         }

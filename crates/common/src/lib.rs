@@ -35,7 +35,10 @@ pub const AUD_HOSTD: &str = "hostd";
 pub const AUD_CONTROLLER: &str = "controller";
 
 pub fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -199,9 +202,14 @@ pub struct LeaseRequest {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum LeaseResponse {
-    Granted { lease: Signed },
+    Granted {
+        lease: Signed,
+    },
     /// Terminal: hostd must destroy. Carries a signed Order.
-    Denied { order: Signed, reason: String },
+    Denied {
+        order: Signed,
+        reason: String,
+    },
 }
 
 // ------------------------------------------------- untrusted VM2 → hostd
@@ -220,9 +228,20 @@ pub enum Vm1State {
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum VmiResult {
     Unmeasured,
-    Unknown { reason: String },
-    Healthy { text_sha256: String, rodata_sha256: String, measured_at: u64 },
-    Tampered { region: String, expected: String, actual: String, measured_at: u64 },
+    Unknown {
+        reason: String,
+    },
+    Healthy {
+        text_sha256: String,
+        rodata_sha256: String,
+        measured_at: u64,
+    },
+    Tampered {
+        region: String,
+        expected: String,
+        actual: String,
+        measured_at: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -244,9 +263,16 @@ pub struct Vm2Report {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DefenderAction {
-    Veto { request_digest: String, reason: String },
-    Pause { reason: String },
-    TerminateVm1 { reason: String },
+    Veto {
+        request_digest: String,
+        reason: String,
+    },
+    Pause {
+        reason: String,
+    },
+    TerminateVm1 {
+        reason: String,
+    },
 }
 
 /// Signed challenge REQUEST from hostd. Phase 2: controller↔hostd crosses a network (not loopback),
@@ -333,26 +359,43 @@ impl Signed {
     pub fn sign<T: Serialize>(key: &SigningKey, signer: &str, value: &T) -> Self {
         let payload = serde_json::to_string(value).expect("serializable");
         let sig = key.sign(&Sha256::digest(payload.as_bytes()));
-        Signed { payload, sig_hex: hex::encode(sig.to_bytes()), signer: signer.to_string() }
+        Signed {
+            payload,
+            sig_hex: hex::encode(sig.to_bytes()),
+            signer: signer.to_string(),
+        }
     }
 
     /// Verify signature, then version/type/audience, then decode. Nothing is parsed into `T`
     /// before the signature and header checks pass.
-    pub fn verify<T: DeserializeOwned>(&self, pk: &VerifyingKey, expected_type: &str, expected_aud: &str) -> Result<T, ProtoError> {
+    pub fn verify<T: DeserializeOwned>(
+        &self,
+        pk: &VerifyingKey,
+        expected_type: &str,
+        expected_aud: &str,
+    ) -> Result<T, ProtoError> {
         if self.payload.len() > MAX_MSG_BYTES {
             return Err(ProtoError::TooLarge);
         }
-        let sig = Signature::from_slice(&hex::decode(&self.sig_hex)?).map_err(|_| ProtoError::BadSignature)?;
-        pk.verify(&Sha256::digest(self.payload.as_bytes()), &sig).map_err(|_| ProtoError::BadSignature)?;
+        let sig = Signature::from_slice(&hex::decode(&self.sig_hex)?)
+            .map_err(|_| ProtoError::BadSignature)?;
+        pk.verify(&Sha256::digest(self.payload.as_bytes()), &sig)
+            .map_err(|_| ProtoError::BadSignature)?;
         let h: Header = serde_json::from_str(&self.payload)?;
         if h.v != PROTO_V {
             return Err(ProtoError::Version(h.v));
         }
         if h.kind != expected_type {
-            return Err(ProtoError::WrongType { expected: expected_type.into(), got: h.kind });
+            return Err(ProtoError::WrongType {
+                expected: expected_type.into(),
+                got: h.kind,
+            });
         }
         if h.aud != expected_aud {
-            return Err(ProtoError::WrongAud { expected: expected_aud.into(), got: h.aud });
+            return Err(ProtoError::WrongAud {
+                expected: expected_aud.into(),
+                got: h.aud,
+            });
         }
         Ok(serde_json::from_str(&self.payload)?)
     }
@@ -363,11 +406,15 @@ impl Signed {
 }
 
 pub fn key_from_hex(hex_seed: &str) -> anyhow::Result<SigningKey> {
-    let b: [u8; 32] = hex::decode(hex_seed.trim())?.try_into().map_err(|_| anyhow::anyhow!("seed must be 32 bytes"))?;
+    let b: [u8; 32] = hex::decode(hex_seed.trim())?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("seed must be 32 bytes"))?;
     Ok(SigningKey::from_bytes(&b))
 }
 pub fn pubkey_from_hex(h: &str) -> anyhow::Result<VerifyingKey> {
-    let b: [u8; 32] = hex::decode(h.trim())?.try_into().map_err(|_| anyhow::anyhow!("pubkey must be 32 bytes"))?;
+    let b: [u8; 32] = hex::decode(h.trim())?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("pubkey must be 32 bytes"))?;
     Ok(VerifyingKey::from_bytes(&b)?)
 }
 pub fn pubkey_hex(k: &SigningKey) -> String {
@@ -380,17 +427,33 @@ pub fn load_or_create_signing_key(path: &Path) -> anyhow::Result<SigningKey> {
     use std::io::Write;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let key = SigningKey::generate(&mut rand::rngs::OsRng);
-    match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+    {
         Ok(mut file) => {
             file.write_all(hex::encode(key.to_bytes()).as_bytes())?;
             file.sync_all()?;
-            std::fs::File::open(path.parent().ok_or_else(|| anyhow::anyhow!("key has no parent"))?)?.sync_all()?;
+            std::fs::File::open(
+                path.parent()
+                    .ok_or_else(|| anyhow::anyhow!("key has no parent"))?,
+            )?
+            .sync_all()?;
             Ok(key)
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            extern "C" { fn geteuid() -> u32; }
+            extern "C" {
+                fn geteuid() -> u32;
+            }
             let meta = std::fs::symlink_metadata(path)?;
-            anyhow::ensure!(meta.file_type().is_file() && meta.permissions().mode() & 0o077 == 0 && meta.uid() == unsafe { geteuid() }, "key must be a private regular file owned by this user");
+            anyhow::ensure!(
+                meta.file_type().is_file()
+                    && meta.permissions().mode() & 0o077 == 0
+                    && meta.uid() == unsafe { geteuid() },
+                "key must be a private regular file owned by this user"
+            );
             key_from_hex(&std::fs::read_to_string(path)?)
         }
         Err(e) => Err(e.into()),
@@ -419,13 +482,22 @@ impl Deadline {
     /// Accept a lease received now. Rejects delayed/replayed delivery and caps the TTL.
     pub fn accept(lease: &Lease, high_water: u64, wall_now: u64) -> Result<Deadline, String> {
         if lease.fencing_token <= high_water {
-            return Err(format!("fencing token {} not above high-water {}", lease.fencing_token, high_water));
+            return Err(format!(
+                "fencing token {} not above high-water {}",
+                lease.fencing_token, high_water
+            ));
         }
         if wall_now.abs_diff(lease.issued_at) > CLOCK_SKEW_S {
-            return Err(format!("lease issued_at {} too far from now {}", lease.issued_at, wall_now));
+            return Err(format!(
+                "lease issued_at {} too far from now {}",
+                lease.issued_at, wall_now
+            ));
         }
         let ttl = lease.ttl_s.min(MAX_LEASE_TTL_S);
-        let wall_deadline = lease.issued_at.checked_add(ttl).ok_or("lease deadline overflow")?;
+        let wall_deadline = lease
+            .issued_at
+            .checked_add(ttl)
+            .ok_or("lease deadline overflow")?;
         // A delayed lease gets only the time remaining until its wall deadline on the monotonic
         // clock too (N4): it can never buy back a full TTL, so a later wall rollback cannot extend
         // execution past issued_at+ttl.
@@ -447,9 +519,16 @@ impl Deadline {
     /// `expired()` stays self-consistent. This only governs the guest's defense-in-depth self-kill;
     /// the authoritative timing is enforced by hostd (trusted, synced clock) + the host pf gate + the
     /// host-independent kill.
-    pub fn accept_guest(lease: &Lease, high_water: u64, guest_wall_now: u64) -> Result<Deadline, String> {
+    pub fn accept_guest(
+        lease: &Lease,
+        high_water: u64,
+        guest_wall_now: u64,
+    ) -> Result<Deadline, String> {
         if lease.fencing_token <= high_water {
-            return Err(format!("fencing token {} not above high-water {}", lease.fencing_token, high_water));
+            return Err(format!(
+                "fencing token {} not above high-water {}",
+                lease.fencing_token, high_water
+            ));
         }
         let ttl = lease.ttl_s.min(MAX_LEASE_TTL_S);
         Ok(Deadline {
@@ -463,7 +542,10 @@ impl Deadline {
         Instant::now() >= self.mono || wall_now >= self.wall
     }
     pub fn remaining_ms(&self, wall_now: u64) -> i64 {
-        let m = self.mono.saturating_duration_since(Instant::now()).as_millis() as i64;
+        let m = self
+            .mono
+            .saturating_duration_since(Instant::now())
+            .as_millis() as i64;
         let w = (self.wall as i64 - wall_now as i64) * 1000;
         m.min(w)
     }
@@ -477,7 +559,12 @@ pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result
     use std::os::unix::fs::OpenOptionsExt;
     let tmp = path.with_extension("tmp");
     let bytes = serde_json::to_vec_pretty(value)?;
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
     f.write_all(&bytes)?;
     f.sync_all()?;
     std::fs::rename(&tmp, path)?;
@@ -502,7 +589,17 @@ mod tests {
     use rand::rngs::OsRng;
 
     fn lease(tok: u64, issued: u64, ttl: u64) -> Lease {
-        Lease { v: 1, kind: "lease".into(), run_id: "r".into(), aud: AUD_HOSTD.into(), incarnation: "i".into(), epoch: 1, fencing_token: tok, issued_at: issued, ttl_s: ttl }
+        Lease {
+            v: 1,
+            kind: "lease".into(),
+            run_id: "r".into(),
+            aud: AUD_HOSTD.into(),
+            incarnation: "i".into(),
+            epoch: 1,
+            fencing_token: tok,
+            issued_at: issued,
+            ttl_s: ttl,
+        }
     }
 
     #[test]
@@ -513,21 +610,36 @@ mod tests {
         assert_eq!(back.fencing_token, 7);
         // tamper
         let mut t = s.clone();
-        t.payload = t.payload.replace("\"fencing_token\":7", "\"fencing_token\":8");
-        assert!(matches!(t.verify::<Lease>(&k.verifying_key(), "lease", AUD_HOSTD), Err(ProtoError::BadSignature)));
+        t.payload = t
+            .payload
+            .replace("\"fencing_token\":7", "\"fencing_token\":8");
+        assert!(matches!(
+            t.verify::<Lease>(&k.verifying_key(), "lease", AUD_HOSTD),
+            Err(ProtoError::BadSignature)
+        ));
         // wrong key
         let other = SigningKey::generate(&mut OsRng);
-        assert!(s.verify::<Lease>(&other.verifying_key(), "lease", AUD_HOSTD).is_err());
+        assert!(s
+            .verify::<Lease>(&other.verifying_key(), "lease", AUD_HOSTD)
+            .is_err());
         // right key, wrong type / audience: a lease can never be read as an order or for another role
-        assert!(matches!(s.verify::<Lease>(&k.verifying_key(), "order", AUD_HOSTD), Err(ProtoError::WrongType { .. })));
-        assert!(matches!(s.verify::<Lease>(&k.verifying_key(), "lease", AUD_CONTROLLER), Err(ProtoError::WrongAud { .. })));
+        assert!(matches!(
+            s.verify::<Lease>(&k.verifying_key(), "order", AUD_HOSTD),
+            Err(ProtoError::WrongType { .. })
+        ));
+        assert!(matches!(
+            s.verify::<Lease>(&k.verifying_key(), "lease", AUD_CONTROLLER),
+            Err(ProtoError::WrongAud { .. })
+        ));
         // unknown fields rejected
         let mut u = lease(9, 10, 15);
         u.kind = "lease".into();
         let mut v = serde_json::to_value(&u).unwrap();
         v["extra"] = serde_json::json!(1);
         let s2 = Signed::sign(&k, "ctl", &v);
-        assert!(s2.verify::<Lease>(&k.verifying_key(), "lease", AUD_HOSTD).is_err());
+        assert!(s2
+            .verify::<Lease>(&k.verifying_key(), "lease", AUD_HOSTD)
+            .is_err());
     }
 
     #[test]
@@ -550,7 +662,12 @@ mod tests {
         // delivery delayed beyond the skew window is rejected outright (even safer)
         assert!(Deadline::accept(&lease(8, now - 10, 15), 7, now).is_err());
         // wall clock rolled back cannot extend past the monotonic deadline
-        let short = Deadline { mono: Instant::now(), wall: now + 1000, fencing_token: 6, epoch: 1 };
+        let short = Deadline {
+            mono: Instant::now(),
+            wall: now + 1000,
+            fencing_token: 6,
+            epoch: 1,
+        };
         assert!(short.expired(now - 500));
     }
 
@@ -588,17 +705,44 @@ mod tests {
     #[test]
     fn signed_phase2_requests_reject_unknown_fields_and_cross_role_messages() {
         let key = SigningKey::generate(&mut OsRng);
-        let request = ChallengeRequest { v: PROTO_V, kind: "challenge_request".into(), run_id: "r".into(), aud: AUD_CONTROLLER.into(), incarnation: "i".into(), issued_at: 100, request_id: random_hex(32) };
+        let request = ChallengeRequest {
+            v: PROTO_V,
+            kind: "challenge_request".into(),
+            run_id: "r".into(),
+            aud: AUD_CONTROLLER.into(),
+            incarnation: "i".into(),
+            issued_at: 100,
+            request_id: random_hex(32),
+        };
         let signed = Signed::sign(&key, "hostd", &request);
-        assert!(signed.verify::<ChallengeRequest>(&key.verifying_key(), "challenge_request", AUD_CONTROLLER).is_ok());
-        assert!(signed.verify::<DefenderReport>(&key.verifying_key(), "defender_report", AUD_CONTROLLER).is_err());
+        assert!(signed
+            .verify::<ChallengeRequest>(&key.verifying_key(), "challenge_request", AUD_CONTROLLER)
+            .is_ok());
+        assert!(signed
+            .verify::<DefenderReport>(&key.verifying_key(), "defender_report", AUD_CONTROLLER)
+            .is_err());
         let mut value = serde_json::to_value(request).unwrap();
         value["extra"] = serde_json::json!(true);
-        assert!(Signed::sign(&key, "hostd", &value).verify::<ChallengeRequest>(&key.verifying_key(), "challenge_request", AUD_CONTROLLER).is_err());
-        let report = DefenderReport { v: PROTO_V, kind: "defender_report".into(), run_id: "r".into(), aud: AUD_CONTROLLER.into(), incarnation: "i".into(), issued_at: 100, request_id: random_hex(32), action: DefenderAction::Pause { reason: "test".into() } };
+        assert!(Signed::sign(&key, "hostd", &value)
+            .verify::<ChallengeRequest>(&key.verifying_key(), "challenge_request", AUD_CONTROLLER)
+            .is_err());
+        let report = DefenderReport {
+            v: PROTO_V,
+            kind: "defender_report".into(),
+            run_id: "r".into(),
+            aud: AUD_CONTROLLER.into(),
+            incarnation: "i".into(),
+            issued_at: 100,
+            request_id: random_hex(32),
+            action: DefenderAction::Pause {
+                reason: "test".into(),
+            },
+        };
         let mut value = serde_json::to_value(report).unwrap();
         value["extra"] = serde_json::json!(true);
-        assert!(Signed::sign(&key, "hostd", &value).verify::<DefenderReport>(&key.verifying_key(), "defender_report", AUD_CONTROLLER).is_err());
+        assert!(Signed::sign(&key, "hostd", &value)
+            .verify::<DefenderReport>(&key.verifying_key(), "defender_report", AUD_CONTROLLER)
+            .is_err());
     }
 
     #[test]
@@ -616,8 +760,14 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join("key");
         let k = load_or_create_signing_key(&path).unwrap();
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
-        assert_eq!(pubkey_hex(&load_or_create_signing_key(&path).unwrap()), pubkey_hex(&k));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            pubkey_hex(&load_or_create_signing_key(&path).unwrap()),
+            pubkey_hex(&k)
+        );
         symlink(&path, dir.join("link")).unwrap();
         assert!(load_or_create_signing_key(&dir.join("link")).is_err());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();

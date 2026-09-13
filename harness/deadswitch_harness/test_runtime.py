@@ -1,10 +1,10 @@
 """Regression tests for the harness's timeout and observation-to-verdict path."""
 import json
-from pathlib import Path
 import sys
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

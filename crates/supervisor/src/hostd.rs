@@ -36,12 +36,26 @@ impl Hostd {
         let http = reqwest::Client::builder()
             .pool_max_idle_per_host(0)
             .timeout(std::time::Duration::from_secs(5))
-            .build().unwrap();
-        let h = Arc::new(Hostd { base, token, http, log_tx: tx, log_seq: AtomicU64::new(0), log_dropped: std::sync::Arc::new(AtomicU64::new(0)) });
+            .build()
+            .unwrap();
+        let h = Arc::new(Hostd {
+            base,
+            token,
+            http,
+            log_tx: tx,
+            log_seq: AtomicU64::new(0),
+            log_dropped: std::sync::Arc::new(AtomicU64::new(0)),
+        });
         let hc = h.clone();
         tokio::spawn(async move {
             while let Some(ev) = rx.recv().await {
-                let _ = hc.http.post(format!("{}/v1/log", hc.base)).bearer_auth(&hc.token).json(&ev).send().await;
+                let _ = hc
+                    .http
+                    .post(format!("{}/v1/log", hc.base))
+                    .bearer_auth(&hc.token)
+                    .json(&ev)
+                    .send()
+                    .await;
             }
         });
         h
@@ -52,7 +66,13 @@ impl Hostd {
     }
 
     pub fn log(&self, kind: &str, msg: impl Into<String>, data: serde_json::Value) {
-        let ev = LogEvent { seq: self.log_seq.fetch_add(1, Ordering::SeqCst), ts: now_unix(), kind: kind.into(), msg: msg.into(), data };
+        let ev = LogEvent {
+            seq: self.log_seq.fetch_add(1, Ordering::SeqCst),
+            ts: now_unix(),
+            kind: kind.into(),
+            msg: msg.into(),
+            data,
+        };
         tracing::info!(kind, msg = %ev.msg, "event");
         if self.log_tx.try_send(ev).is_err() {
             self.log_dropped.fetch_add(1, Ordering::SeqCst);
@@ -68,8 +88,14 @@ impl Hostd {
         let url = format!("{}/v1/lease", self.base);
         let token = self.token.clone();
         let v = tokio::task::spawn_blocking(move || -> anyhow::Result<LeaseView> {
-            let c = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(5)).build()?;
-            Ok(c.get(&url).bearer_auth(&token).send()?.error_for_status()?.json()?)
+            let c = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()?;
+            Ok(c.get(&url)
+                .bearer_auth(&token)
+                .send()?
+                .error_for_status()?
+                .json()?)
         })
         .await??;
         Ok(v)
@@ -77,7 +103,11 @@ impl Hostd {
 
     /// Verified rung-1 lease: signature by the controller key, right run, replay-filtered by the
     /// caller's high-water mark.
-    pub async fn verified_lease(&self, pk: &VerifyingKey, run_id: &str) -> anyhow::Result<Option<(Lease, GateState)>> {
+    pub async fn verified_lease(
+        &self,
+        pk: &VerifyingKey,
+        run_id: &str,
+    ) -> anyhow::Result<Option<(Lease, GateState)>> {
         let v = self.lease().await?;
         match v.lease {
             None => Ok(None),
@@ -90,16 +120,32 @@ impl Hostd {
     }
 
     pub async fn report(&self, r: &Vm2Report) -> anyhow::Result<()> {
-        self.http.post(format!("{}/v1/report", self.base)).bearer_auth(&self.token).json(r).send().await?.error_for_status()?;
+        self.http
+            .post(format!("{}/v1/report", self.base))
+            .bearer_auth(&self.token)
+            .json(r)
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
     pub async fn defender(&self, a: &DefenderAction) -> anyhow::Result<()> {
-        self.http.post(format!("{}/v1/defender", self.base)).bearer_auth(&self.token).json(a).send().await?.error_for_status()?;
+        self.http
+            .post(format!("{}/v1/defender", self.base))
+            .bearer_auth(&self.token)
+            .json(a)
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
-    pub async fn prestage_done(&self, manifest_digest: &str, image_digest: &str) -> anyhow::Result<()> {
+    pub async fn prestage_done(
+        &self,
+        manifest_digest: &str,
+        image_digest: &str,
+    ) -> anyhow::Result<()> {
         self.http
             .post(format!("{}/v1/prestage-done", self.base))
             .bearer_auth(&self.token)
@@ -122,7 +168,10 @@ impl Hostd {
             .send()
             .await?;
         let st = r.status().as_u16();
-        let j = r.json::<serde_json::Value>().await.unwrap_or(serde_json::json!({"error": "bad upstream body"}));
+        let j = r
+            .json::<serde_json::Value>()
+            .await
+            .unwrap_or(serde_json::json!({"error": "bad upstream body"}));
         Ok((st, j))
     }
 }
@@ -130,9 +179,9 @@ impl Hostd {
 #[cfg(test)]
 mod tests {
     use super::Hostd;
+    use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{TcpListener, TcpStream};
-    use std::time::Duration;
 
     #[tokio::test]
     async fn a_gate_transition_cannot_reuse_a_stranded_connection() {
@@ -141,9 +190,15 @@ mod tests {
             loop {
                 let mut line = String::new();
                 assert!(reader.read_line(&mut line).await.unwrap() > 0);
-                if line == "\r\n" { break; }
+                if line == "\r\n" {
+                    break;
+                }
             }
-            reader.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").await.unwrap();
+            reader
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                .await
+                .unwrap();
         }
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -162,7 +217,9 @@ mod tests {
                 let r = h.http.get(&url).send().await.unwrap();
                 assert!(r.status().is_success());
                 assert_eq!(r.text().await.unwrap(), "{}");
-            }).await.expect("request reused a connection stranded by the gate transition");
+            })
+            .await
+            .expect("request reused a connection stranded by the gate transition");
         }
         server.await.unwrap();
     }

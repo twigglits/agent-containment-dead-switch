@@ -22,7 +22,17 @@ fn sh(user: Option<&str>, script: &str) -> anyhow::Result<String> {
     let mut c = match user {
         Some(u) => {
             let mut c = Command::new("/usr/bin/sudo");
-            c.args(["-n", "-u", u, "-H", "/bin/bash", "-euo", "pipefail", "-c", script]);
+            c.args([
+                "-n",
+                "-u",
+                u,
+                "-H",
+                "/bin/bash",
+                "-euo",
+                "pipefail",
+                "-c",
+                script,
+            ]);
             c
         }
         None => {
@@ -33,7 +43,11 @@ fn sh(user: Option<&str>, script: &str) -> anyhow::Result<String> {
     };
     let out = c.output().context("spawn bash")?;
     if !out.status.success() {
-        return Err(anyhow!("script failed ({}): {}", out.status, String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(anyhow!(
+            "script failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
@@ -51,7 +65,14 @@ pub fn sha256_file(p: &Path) -> anyhow::Result<String> {
 pub fn run(harness_src: &Path, out_dir: &Path, model: &str) -> anyhow::Result<Prestaged> {
     let stage = Path::new("/var/lib/deadswitch/prestage/stage");
     // 1. resolve + download as the prestage user; wheels only ⇒ no package build scripts run.
-    sh(None, &format!("rm -rf {s} && mkdir -p {s} && cp -r {src}/. {s}/ && chown -R prestage:prestage {s}", s = stage.display(), src = harness_src.display()))?;
+    sh(
+        None,
+        &format!(
+            "rm -rf {s} && mkdir -p {s} && cp -r {src}/. {s}/ && chown -R prestage:prestage {s}",
+            s = stage.display(),
+            src = harness_src.display()
+        ),
+    )?;
     // Build the venv against the SYSTEM interpreter /usr/bin/python3.12 (present in both VM2 and the
     // Ubuntu-noble VM1), NOT a uv-downloaded standalone CPython whose absolute install path would not
     // exist in VM1. With --relocatable the venv's internal paths are relative and its base
@@ -109,14 +130,29 @@ pub fn run(harness_src: &Path, out_dir: &Path, model: &str) -> anyhow::Result<Pr
     ))
     .context("build deps image")?;
     let image_digest = sha256_file(&image)?;
-    Ok(Prestaged { image, image_digest, manifest_digest, manifest })
+    Ok(Prestaged {
+        image,
+        image_digest,
+        manifest_digest,
+        manifest,
+    })
 }
 
 /// Re-verify at attach time (docs §8): the file we attach is the file we built.
 pub fn verify(image: &Path, expected: &str) -> anyhow::Result<()> {
     let got = sha256_file(image)?;
-    anyhow::ensure!(got == expected, "deps image digest changed: {got} != {expected}");
+    anyhow::ensure!(
+        got == expected,
+        "deps image digest changed: {got} != {expected}"
+    );
     let attrs = sh(None, &format!("lsattr -d {}", image.display()))?;
-    anyhow::ensure!(attrs.split_whitespace().next().map(|a| a.contains('i')).unwrap_or(false), "deps image is not immutable");
+    anyhow::ensure!(
+        attrs
+            .split_whitespace()
+            .next()
+            .map(|a| a.contains('i'))
+            .unwrap_or(false),
+        "deps image is not immutable"
+    );
     Ok(())
 }
