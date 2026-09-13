@@ -705,7 +705,7 @@ impl GradingService {
                 stored_at: now,
             },
         );
-        self.save_broker(&next)?; // both object + unique claim durable before Stored is sent
+        self.save_broker(&next)?; // both object + unique claim durable before the opaque receipt
         *broker = next;
         Ok(())
     }

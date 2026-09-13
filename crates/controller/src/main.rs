@@ -837,6 +837,17 @@ async fn health() -> &'static str {
     "ok"
 }
 
+fn hostd_router() -> Router<Arc<App>> {
+    Router::new()
+        .route("/health", get(health))
+        .route("/enroll", post(enroll))
+        .route("/lease", post(lease))
+        .route("/challenge", post(challenge))
+        .route("/evidence", post(evidence))
+        .route("/defender", post(defender))
+        .route("/terminated", post(terminated))
+}
+
 /// Time-based trip: an Active run with no valid evidence for 3 challenge windows is tripped even if
 /// hostd never asks for a challenge at all.
 async fn ticker(app: Arc<App>) {
@@ -903,7 +914,9 @@ async fn main() -> anyhow::Result<()> {
         a.operator_listen,
     )?;
     if a.grading.grading_init {
-        info!("grading state initialized; restart without --grading-init/--grading-budget to serve");
+        info!(
+            "grading state initialized; restart without --grading-init/--grading-budget to serve"
+        );
         return Ok(());
     }
 
@@ -971,14 +984,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/runs/{id}", get(get_run))
         .route("/runs/{id}/revoke", post(revoke_run))
         .merge(grading::operator_router());
-    let mut router = Router::new()
-        .route("/health", get(health))
-        .route("/enroll", post(enroll))
-        .route("/lease", post(lease))
-        .route("/challenge", post(challenge))
-        .route("/evidence", post(evidence))
-        .route("/defender", post(defender))
-        .route("/terminated", post(terminated));
+    let mut router = hostd_router();
     if let Some(addr) = a.operator_listen {
         anyhow::ensure!(
             addr.ip().is_loopback(),

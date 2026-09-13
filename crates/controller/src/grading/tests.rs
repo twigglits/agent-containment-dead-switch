@@ -872,6 +872,13 @@ async fn result_reads_are_only_on_authenticated_operator_router_and_append_is_sc
         .0,
         StatusCode::METHOD_NOT_ALLOWED
     );
+    let hostd = crate::hostd_router().with_state(app.clone());
+    assert_eq!(
+        call(hostd, "GET", "/grading/results", Some("operator"), vec![])
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
     let ops = operator_router().with_state(app);
     assert_eq!(
         call(ops.clone(), "GET", "/grading/results", None, vec![])

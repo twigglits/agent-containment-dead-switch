@@ -1,0 +1,23 @@
+[Unit]
+Description=Dead Switch Phase 3 trusted grader
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=root
+Group=root
+UMask=0077
+EnvironmentFile=/etc/deadswitch-grader/grader.env
+ExecStart=/usr/local/bin/deadswitch-grader run
+# Rust performs mandatory destroy-all before readiness, including ambiguous restart recovery.
+# BindsTo+After on each transient sandbox unit stops it whenever this service becomes inactive.
+Restart=no
+KillMode=control-group
+TimeoutStopSec=6s
+LimitCORE=0
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
