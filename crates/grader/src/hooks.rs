@@ -31,6 +31,7 @@ impl HookPaths {
     pub fn validate(&self) -> anyhow::Result<()> {
         for path in [&self.launch, &self.observe, &self.destroy, &self.destroy_all] {
             ensure!(path.is_absolute(), "hook path must be absolute");
+            crate::state::check_trusted_ancestors(path)?;
             let metadata = std::fs::symlink_metadata(path)?;
             ensure!(
                 metadata.is_file()

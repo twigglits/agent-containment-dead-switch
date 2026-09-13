@@ -67,6 +67,9 @@ struct RunArgs {
 }
 
 fn identity(args: &IdentityArgs) -> anyhow::Result<(SigningKey, Vec<u8>, Binding)> {
+    for path in [&args.state_dir, &args.key_file, &args.expected_output] {
+        deadswitch_grader::state::check_trusted_ancestors(path)?;
+    }
     let key_bytes = read_private_file(&args.key_file, 256, false)?;
     let key = key_from_hex(std::str::from_utf8(&key_bytes)?)?;
     let expected = read_private_file(&args.expected_output, MAX_CAPTURED_OUTPUT_BYTES, true)?;

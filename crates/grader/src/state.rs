@@ -328,6 +328,22 @@ fn check_private_directory(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Production configuration may not be replaced through an untrusted writable/symlink parent.
+/// Called at the CLI boundary; isolated unit-test temporary directories do not use this check.
+pub fn check_trusted_ancestors(path: &Path) -> anyhow::Result<()> {
+    ensure!(path.is_absolute(), "trusted path must be absolute");
+    for parent in path.ancestors().skip(1) {
+        let meta = std::fs::symlink_metadata(parent)?;
+        ensure!(
+            meta.file_type().is_dir()
+                && (meta.uid() == 0 || meta.uid() == unsafe { libc::geteuid() })
+                && meta.permissions().mode() & 0o022 == 0,
+            "trusted path has a symlink or untrusted writable ancestor"
+        );
+    }
+    Ok(())
+}
+
 fn open_private(path: &Path, read_only_mode: bool) -> anyhow::Result<File> {
     let f = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)?;
     let m = f.metadata()?;

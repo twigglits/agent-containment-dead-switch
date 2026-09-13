@@ -83,7 +83,7 @@ impl GradingJob {
                 && self.scorer_version == SCORER_VERSION,
             "unpinned fixture"
         );
-        let ttl = self.expires_at.checked_sub(self.issued_at).unwrap_or(0);
+        let ttl = self.expires_at.saturating_sub(self.issued_at);
         ensure!((1..=MAX_GRADING_TTL_S).contains(&ttl), "job lifetime");
         ensure!(
             self.issued_at <= now.saturating_add(CLOCK_SKEW_S) && now < self.expires_at,

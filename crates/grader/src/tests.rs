@@ -5,6 +5,7 @@ use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
 use std::process::Command;
+use std::time::Instant;
 
 struct TestDir(PathBuf);
 

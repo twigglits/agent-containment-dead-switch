@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub const RESULT_URL: &str = "http://10.20.0.1:7201/results";
 pub const DISPATCH_ADDR: &str = "10.20.0.4:7200";
@@ -322,8 +322,8 @@ struct Frozen {
     frozen_at: u64,
 }
 
-/// Fixed numeric destination, no proxy, no redirect, no DNS, no response-body consumption. Each
-/// blocking network operation is capped by both remaining clocks; the sandbox is already gone.
+/// Fixed numeric destination, no proxy, redirect, DNS or response-body consumption. The request
+/// future is cancelled within one polling tick of either clock expiring or operator shutdown.
 pub struct HttpPublisher;
 
 impl ResultPublisher for HttpPublisher {
@@ -332,25 +332,40 @@ impl ResultPublisher for HttpPublisher {
         let remaining = authority.deadline.remaining_ms(now_unix());
         ensure!(remaining > 0, "result authority expired");
         let max_time = Duration::from_millis(remaining as u64).min(Duration::from_secs(5));
-        let until = Instant::now() + max_time;
-        let client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .retry(reqwest::retry::never())
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(max_time)
-            .timeout(max_time)
-            .build()?;
-        authority.check()?;
-        let response = client
-            .post(RESULT_URL)
-            .header("Content-Type", "application/json")
-            .body(serde_json::to_vec(result)?)
-            .timeout(until.saturating_duration_since(Instant::now()))
-            .send()
-            .context("result append failed")?;
-        ensure!(response.status().is_success(), "result append rejected");
-        authority.check()?;
-        Ok(())
+        // Processor runs on its own blocking worker. A separate runtime keeps the publication
+        // cancellation watchdog independent of HTTP intake, fsyncs and other runtime activity.
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let client = reqwest::Client::builder()
+                    .no_proxy()
+                    .retry(reqwest::retry::never())
+                    .redirect(reqwest::redirect::Policy::none())
+                    .connect_timeout(max_time)
+                    .timeout(max_time)
+                    .build()?;
+                authority.check()?;
+                let request = client
+                    .post(RESULT_URL)
+                    .header("Content-Type", "application/json")
+                    .body(serde_json::to_vec(result)?)
+                    .send();
+                let mut checks = tokio::time::interval(Duration::from_millis(10));
+                tokio::pin!(request);
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = checks.tick() => authority.check()?,
+                        response = &mut request => {
+                            let response = response.context("result append failed")?;
+                            authority.check()?;
+                            ensure!(response.status().is_success(), "result append rejected");
+                            return Ok(());
+                        }
+                    }
+                }
+            })
     }
 }
 
