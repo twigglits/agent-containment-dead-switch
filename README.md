@@ -35,6 +35,18 @@ Face evaluation-security incident, whose report is transcribed in
   end-of-phase review pending.
 - Phase 3 (isolated-grading airlock): designed, not built.
 
+## Roadmap
+
+- **Agentic defender in VM2.** Today the VM2 defender is a deterministic rules engine with a
+  bounded-authority `Judge` slot (`crates/supervisor/src/defender.rs`); the evaluated model's
+  weights sit on the chokepoint, not in VM1. The roadmap replaces the judge with an agentic defender
+  model that has monitors latched onto the **network pipe** (every gateway request) and primed on the
+  **VM1↔VM2 boundary** (QMP, tap, virtio, scoped VMI), so an attempt by the VM1 agent to break out of
+  its sandbox VM is detected at the boundary and VM1 is killed and destroyed. Authority stays closed:
+  kill VM1, request a trip, nothing wider.
+- Phase 2 live A2/A4 and the formal end-of-phase review; then Phase 3.
+- Independent hardware observer so a hardware reset can be confirmed rather than quarantined.
+
 ## Build and test
 
 ```

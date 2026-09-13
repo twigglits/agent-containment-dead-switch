@@ -202,7 +202,7 @@ flowchart TB
           Agent["Model + harness + tools"]
         end
         Intercept["Exact-action request gateway (in-guest)"]
-        Defender["Defensive model (bounded authority)"]
+        Defender["Defender (bounded authority; rules today, agentic model roadmap)"]
         HB["Host-signed heartbeat"]
       end
       VMI["Scoped VMI (host-side, QMP pmemsave)"]
@@ -229,8 +229,8 @@ flowchart TB
   real browser driven by an agentic harness). It receives an immutable, read-only dependency snapshot;
   it has no package manager, no registry, and no egress except through the exact-action gateway.
 - **VM2 — the supervisor.** Boots VM1 as a *nested* QEMU/KVM guest, hosts the in-guest request gateway
-  and the bounded defender, and emits a heartbeat. VM2 is minimized and assumed potentially
-  compromisable.
+  and the bounded defender (rule-based today; see §4.5), and emits a heartbeat. VM2 is minimized and
+  assumed potentially compromisable.
 - **The host** boots VM2, owns the egress gate and the lease watchdog, performs scoped VMI, and stores
   evidence. A trusted host agent runs *below* VM2: `hostd` on the macOS profile, `evalagent` on the
   Linux bare-metal profile.
@@ -283,6 +283,33 @@ one; missing/stale/invalid ⇒ trip. Scoped VMI reads exact guest-physical range
 written off-host with bounded buffering; the store serializes each complete record under a dedicated
 writer lock across the quota check, append, and fsync, so concurrent events cannot interleave or race
 the quota.
+
+### 4.5 The defender: what ships today, and the agentic roadmap
+
+The design reserves a **defensive model with bounded authority** inside VM2 (§2, goal 4). What ships
+today is narrower, and we state it plainly: the defender in
+[`crates/supervisor/src/defender.rs`](../crates/supervisor/src/defender.rs) is a **deterministic
+rules engine**, not a model. It enforces hard rules that no judge can relax — it counts forbidden
+non-inference requests and terminates VM1 after a fixed threshold, and it scans *decoded* prompt
+content for secret markers (private-key headers, cloud-credential prefixes) as exfiltration. Its
+whole authority is a closed action enum (veto, pause, terminate) routed through the supervisor; it
+has no API to change policy, extend a lease, or clear a revocation. A `Judge` slot exists where a
+model plugs in; the approve-all and deny-all judges that occupy it today exist to *prove* the
+bounded-authority property under test (an approve-everything judge changes nothing), not to defend.
+
+The evaluated model's weights are also **not inside VM1**. VM1 holds the agent harness, browser, and
+tools; every inference call leaves through the exact-action gateway and is answered by the pinned
+backend on the chokepoint. That is deliberate: deleting the chokepoint removes inference and egress
+together, and the weights never sit inside the adversary's sandbox.
+
+The roadmap item (§9) is an **agentic defender model in VM2 with two monitors latched on**: one on
+the **network pipe** (every request the gateway sees, in both directions), and one **primed on the
+VM1↔VM2 boundary** — the nested-guest's QMP control socket, its tap interface, its virtio devices,
+and the scoped VMI measurements — so that an attempt by the VM1 agent to break out of its sandbox
+VM is detected at the boundary and answered by **destroying VM1** (domain destroy plus disposable
+overlay delete), within the same bounded authority: the defender may kill VM1 and may request that
+the controller trip the run, but it still cannot widen its own scope, and VM2's own fate remains in
+the off-host controller's hands.
 
 ---
 
@@ -463,6 +490,9 @@ This is a reference architecture with a deliberately bounded threat model. We st
   the end-of-phase adversarial review is pending. The Phase 2 VM1 workload is a minimal scripted
   inference loop plus blocked canaries, not the Phase 1 browser agent — the positive control (A5) is
   reused from Phase 1 rather than re-ported to x86.
+- **The shipped defender is rule-based, not a model.** The advisory `Judge` slot is filled by test
+  doubles today (§4.5); the agentic defender with network-pipe and VM1↔VM2 boundary monitors is
+  future work.
 - **Bare metal does not auto-restore host-side VMI** unless separately built and validated; the current
   bare-metal VMI is treated as advisory until qualified on the exact hardware.
 - **Grading integrity ≠ preventing every cheating strategy.** Isolation protects held-out keys, not
@@ -479,6 +509,12 @@ This is a reference architecture with a deliberately bounded threat model. We st
 
 - Complete Phase 2 live acceptance (A2, A4) on the dedicated hardware and re-request the formal
   end-of-phase review.
+- **Agentic defender model in VM2 with monitors latched onto the network pipe.** Replace the
+  rule-based judge with a bounded-authority defensive model that watches every request crossing the
+  exact-action gateway, and prime a second monitor on the **VM1↔VM2 boundary** (QMP socket, tap
+  interface, virtio devices, scoped VMI) so that a breakout attempt by the VM1 agent is detected at
+  the boundary and VM1 is **killed and destroyed** on the spot. The defender keeps the same closed
+  authority — kill VM1, request a trip — and is re-validated with the approve-everything swap test.
 - Build Phase 3, the isolated-grading airlock, end to end.
 - Add an independent hardware observer so the kill can be *confirmed*, not just dispatched.
 - Qualify bare-metal host-side VMI on the target hardware; expand scoped VMI coverage.
