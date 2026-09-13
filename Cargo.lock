@@ -328,6 +328,7 @@ dependencies = [
  "deadswitch-common",
  "ed25519-dalek",
  "hex",
+ "libc",
  "rand 0.8.8",
  "reqwest",
  "serde",
@@ -335,6 +336,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "ulid",
@@ -349,6 +351,24 @@ dependencies = [
  "clap",
  "deadswitch-common",
  "ed25519-dalek",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "deadswitch-grader"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "deadswitch-common",
+ "ed25519-dalek",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

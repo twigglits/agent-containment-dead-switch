@@ -65,20 +65,43 @@ impl GradingJob {
     /// Shape and wall expiry checks, also usable when rechecking result-commit authority.
     /// Durable high-water, terminal claims and role-key pinning belong to the trusted caller.
     pub fn validate(&self, now: u64) -> Result<()> {
-        ensure!(self.v == PROTO_V && self.kind == JOB_TYPE && self.aud == AUD_GRADER, "job header");
-        ensure!(valid_id(&self.job_id) && valid_id(&self.run_id) && valid_id(&self.incarnation), "job identity");
-        ensure!(self.fencing_token > 0 && valid_digest(&self.submission_digest), "job binding");
-        ensure!(self.task_id == TASK_ID && self.input_version == INPUT_VERSION && self.scorer_version == SCORER_VERSION, "unpinned fixture");
+        ensure!(
+            self.v == PROTO_V && self.kind == JOB_TYPE && self.aud == AUD_GRADER,
+            "job header"
+        );
+        ensure!(
+            valid_id(&self.job_id) && valid_id(&self.run_id) && valid_id(&self.incarnation),
+            "job identity"
+        );
+        ensure!(
+            self.fencing_token > 0 && valid_digest(&self.submission_digest),
+            "job binding"
+        );
+        ensure!(
+            self.task_id == TASK_ID
+                && self.input_version == INPUT_VERSION
+                && self.scorer_version == SCORER_VERSION,
+            "unpinned fixture"
+        );
         let ttl = self.expires_at.checked_sub(self.issued_at).unwrap_or(0);
         ensure!((1..=MAX_GRADING_TTL_S).contains(&ttl), "job lifetime");
-        ensure!(self.issued_at <= now.saturating_add(CLOCK_SKEW_S) && now < self.expires_at, "job expired or future dated");
+        ensure!(
+            self.issued_at <= now.saturating_add(CLOCK_SKEW_S) && now < self.expires_at,
+            "job expired or future dated"
+        );
         Ok(())
     }
 
     /// Never execute decoded, normalized, or replacement bytes in place of these exact bytes.
     pub fn bind_submission(&self, bytes: &[u8]) -> Result<()> {
-        ensure!(!bytes.is_empty() && bytes.len() <= MAX_SUBMISSION_BYTES, "submission size");
-        ensure!(valid_digest(&self.submission_digest) && sha256_hex(bytes) == self.submission_digest, "submission digest mismatch");
+        ensure!(
+            !bytes.is_empty() && bytes.len() <= MAX_SUBMISSION_BYTES,
+            "submission size"
+        );
+        ensure!(
+            valid_digest(&self.submission_digest) && sha256_hex(bytes) == self.submission_digest,
+            "submission digest mismatch"
+        );
         Ok(())
     }
 
@@ -86,9 +109,18 @@ impl GradingJob {
     /// This constructs no Lease and calls none of the evaluation authority transitions.
     pub fn deadline(&self, high_water: u64, now: u64) -> Result<Deadline> {
         self.validate(now)?;
-        ensure!(self.fencing_token > high_water, "grading fencing high-water");
-        ensure!(now.abs_diff(self.issued_at) <= CLOCK_SKEW_S, "delayed grading dispatch");
-        let remaining = self.expires_at.saturating_sub(now).min(self.expires_at - self.issued_at);
+        ensure!(
+            self.fencing_token > high_water,
+            "grading fencing high-water"
+        );
+        ensure!(
+            now.abs_diff(self.issued_at) <= CLOCK_SKEW_S,
+            "delayed grading dispatch"
+        );
+        let remaining = self
+            .expires_at
+            .saturating_sub(now)
+            .min(self.expires_at - self.issued_at);
         Ok(Deadline {
             mono: Instant::now() + Duration::from_secs(remaining),
             wall: self.expires_at,
@@ -154,28 +186,75 @@ pub struct GradingResult {
 impl GradingResult {
     pub fn validate_for(&self, job: &GradingJob, now: u64) -> Result<()> {
         job.validate(now)?;
-        ensure!(self.v == PROTO_V && self.kind == RESULT_TYPE && self.aud == AUD_GRADING_RESULTS, "result header");
-        ensure!(self.job_id == job.job_id && self.run_id == job.run_id && self.incarnation == job.incarnation && self.fencing_token == job.fencing_token, "result identity mismatch");
-        ensure!(self.submission_digest == job.submission_digest && self.launched_artifact_digest == job.submission_digest, "launched digest mismatch");
-        ensure!(self.task_id == job.task_id && self.input_version == job.input_version && self.scorer_version == job.scorer_version, "result fixture mismatch");
-        ensure!(valid_hex(&self.sandbox_id, 32) && valid_digest(&self.captured_output_digest), "result digest or sandbox identity");
-        ensure!(self.expires_at == job.expires_at && self.issued_at < self.expires_at && self.issued_at <= now.saturating_add(CLOCK_SKEW_S), "result lifetime");
+        ensure!(
+            self.v == PROTO_V && self.kind == RESULT_TYPE && self.aud == AUD_GRADING_RESULTS,
+            "result header"
+        );
+        ensure!(
+            self.job_id == job.job_id
+                && self.run_id == job.run_id
+                && self.incarnation == job.incarnation
+                && self.fencing_token == job.fencing_token,
+            "result identity mismatch"
+        );
+        ensure!(
+            self.submission_digest == job.submission_digest
+                && self.launched_artifact_digest == job.submission_digest,
+            "launched digest mismatch"
+        );
+        ensure!(
+            self.task_id == job.task_id
+                && self.input_version == job.input_version
+                && self.scorer_version == job.scorer_version,
+            "result fixture mismatch"
+        );
+        ensure!(
+            valid_hex(&self.sandbox_id, 32) && valid_digest(&self.captured_output_digest),
+            "result digest or sandbox identity"
+        );
+        ensure!(
+            self.expires_at == job.expires_at
+                && self.issued_at < self.expires_at
+                && self.issued_at <= now.saturating_add(CLOCK_SKEW_S),
+            "result lifetime"
+        );
         let o = &self.observations;
-        ensure!(o.started && o.exited && !o.timed_out && o.teardown_confirmed, "incomplete trusted lifecycle");
-        ensure!(o.started_at > 0 && o.started_at.saturating_add(CLOCK_SKEW_S) >= job.issued_at && o.started_at <= o.exited_at && o.exited_at <= o.frozen_at && o.frozen_at <= o.teardown_confirmed_at && o.teardown_confirmed_at <= self.issued_at, "freeze/teardown/publication order");
+        ensure!(
+            o.started && o.exited && !o.timed_out && o.teardown_confirmed,
+            "incomplete trusted lifecycle"
+        );
+        ensure!(
+            o.started_at > 0
+                && o.started_at.saturating_add(CLOCK_SKEW_S) >= job.issued_at
+                && o.started_at <= o.exited_at
+                && o.exited_at <= o.frozen_at
+                && o.frozen_at <= o.teardown_confirmed_at
+                && o.teardown_confirmed_at <= self.issued_at,
+            "freeze/teardown/publication order"
+        );
         Ok(())
     }
 
     pub fn bind_captured_output(&self, bytes: &[u8]) -> Result<()> {
-        ensure!(bytes.len() <= MAX_CAPTURED_OUTPUT_BYTES && sha256_hex(bytes) == self.captured_output_digest, "captured output mismatch");
+        ensure!(
+            bytes.len() <= MAX_CAPTURED_OUTPUT_BYTES
+                && sha256_hex(bytes) == self.captured_output_digest,
+            "captured output mismatch"
+        );
         Ok(())
     }
 }
 
 fn envelope_bounds(signed: &Signed, role: &str) -> Result<()> {
     // signer is an unauthenticated hint in Signed, so check it only in addition to the pinned key.
-    ensure!(signed.signer == role && valid_hex(&signed.sig_hex, 128), "grading signer shape");
-    ensure!(serde_json::to_vec(signed)?.len() <= MAX_GRADING_ENVELOPE_BYTES, "grading envelope size");
+    ensure!(
+        signed.signer == role && valid_hex(&signed.sig_hex, 128),
+        "grading signer shape"
+    );
+    ensure!(
+        serde_json::to_vec(signed)?.len() <= MAX_GRADING_ENVELOPE_BYTES,
+        "grading envelope size"
+    );
     Ok(())
 }
 
@@ -186,7 +265,12 @@ pub fn verify_job(signed: &Signed, key: &VerifyingKey, now: u64) -> Result<Gradi
     Ok(job)
 }
 
-pub fn verify_result(signed: &Signed, key: &VerifyingKey, job: &GradingJob, now: u64) -> Result<GradingResult> {
+pub fn verify_result(
+    signed: &Signed,
+    key: &VerifyingKey,
+    job: &GradingJob,
+    now: u64,
+) -> Result<GradingResult> {
     envelope_bounds(signed, "scorer")?;
     let result: GradingResult = signed.verify(key, RESULT_TYPE, AUD_GRADING_RESULTS)?;
     result.validate_for(job, now)?;
@@ -197,7 +281,10 @@ pub fn verify_result(signed: &Signed, key: &VerifyingKey, job: &GradingJob, now:
 /// count, exactly that many UTF-8 Signed JSON bytes, then 1..=65536 raw submission bytes.
 pub fn encode_dispatch(signed: &Signed, submission: &[u8]) -> Result<Vec<u8>> {
     envelope_bounds(signed, "controller")?;
-    ensure!(!submission.is_empty() && submission.len() <= MAX_SUBMISSION_BYTES, "submission size");
+    ensure!(
+        !submission.is_empty() && submission.len() <= MAX_SUBMISSION_BYTES,
+        "submission size"
+    );
     let envelope = serde_json::to_vec(signed)?;
     let mut frame = Vec::with_capacity(4 + envelope.len() + submission.len());
     frame.extend_from_slice(&(envelope.len() as u32).to_be_bytes());
@@ -207,9 +294,15 @@ pub fn encode_dispatch(signed: &Signed, submission: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub fn decode_dispatch(frame: &[u8]) -> Result<(Signed, Vec<u8>)> {
-    ensure!((5..=MAX_DISPATCH_BYTES).contains(&frame.len()), "dispatch size");
+    ensure!(
+        (5..=MAX_DISPATCH_BYTES).contains(&frame.len()),
+        "dispatch size"
+    );
     let size = u32::from_be_bytes(frame[..4].try_into()?) as usize;
-    ensure!((1..=MAX_GRADING_ENVELOPE_BYTES).contains(&size) && 4 + size < frame.len(), "dispatch framing");
+    ensure!(
+        (1..=MAX_GRADING_ENVELOPE_BYTES).contains(&size) && 4 + size < frame.len(),
+        "dispatch framing"
+    );
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct StrictSigned {
@@ -218,7 +311,11 @@ pub fn decode_dispatch(frame: &[u8]) -> Result<(Signed, Vec<u8>)> {
         signer: String,
     }
     let raw: StrictSigned = serde_json::from_slice(&frame[4..4 + size])?;
-    let signed = Signed { payload: raw.payload, sig_hex: raw.sig_hex, signer: raw.signer };
+    let signed = Signed {
+        payload: raw.payload,
+        sig_hex: raw.sig_hex,
+        signer: raw.signer,
+    };
     envelope_bounds(&signed, "controller")?;
     let submission = &frame[4 + size..];
     ensure!(submission.len() <= MAX_SUBMISSION_BYTES, "submission size");
