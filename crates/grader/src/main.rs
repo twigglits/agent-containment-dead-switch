@@ -6,11 +6,17 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use clap::{Parser, Subcommand};
-use deadswitch_common::grading::{decode_dispatch, verify_job, MAX_CAPTURED_OUTPUT_BYTES, MAX_DISPATCH_BYTES};
-use deadswitch_common::{key_from_hex, load_or_create_signing_key, now_unix, pubkey_from_hex, pubkey_hex, sha256_hex};
+use deadswitch_common::grading::{
+    decode_dispatch, verify_job, MAX_CAPTURED_OUTPUT_BYTES, MAX_DISPATCH_BYTES,
+};
+use deadswitch_common::{
+    key_from_hex, load_or_create_signing_key, now_unix, pubkey_from_hex, pubkey_hex, sha256_hex,
+};
 use deadswitch_grader::hooks::{HookPaths, ShellHooks};
 use deadswitch_grader::state::{read_private_file, Binding, PendingJob, StateLock, Store};
-use deadswitch_grader::{HttpPublisher, Processor, SandboxHooks, DISPATCH_ADDR, FIXED_DISPATCH_ACK};
+use deadswitch_grader::{
+    HttpPublisher, Processor, SandboxHooks, DISPATCH_ADDR, FIXED_DISPATCH_ACK,
+};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -42,13 +48,21 @@ enum Command {
 
 #[derive(Parser, Clone)]
 struct IdentityArgs {
-    #[arg(long, env = "DS_GRADER_STATE_DIR", default_value = "/var/lib/deadswitch-grader")]
+    #[arg(
+        long,
+        env = "DS_GRADER_STATE_DIR",
+        default_value = "/var/lib/deadswitch-grader"
+    )]
     state_dir: PathBuf,
     #[arg(long, env = "DS_GRADER_KEY_FILE")]
     key_file: PathBuf,
     #[arg(long, env = "DS_CONTROLLER_PUBKEY")]
     controller_pubkey: String,
-    #[arg(long, env = "DS_GRADER_EXPECTED_OUTPUT", default_value = "/etc/deadswitch-grader/expected-output.bin")]
+    #[arg(
+        long,
+        env = "DS_GRADER_EXPECTED_OUTPUT",
+        default_value = "/etc/deadswitch-grader/expected-output.bin"
+    )]
     expected_output: PathBuf,
 }
 
@@ -117,7 +131,10 @@ async fn dispatch(
     // is controller-only; the upload broker has already terminated its independent agent socket.
     if peer.ip() != IpAddr::V4(Ipv4Addr::new(10, 20, 0, 1))
         || intake.stopping.load(Ordering::SeqCst)
-        || request.headers().get(header::CONTENT_TYPE).and_then(|h| h.to_str().ok())
+        || request
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
             != Some("application/octet-stream")
     {
         return acknowledgement();
@@ -139,10 +156,16 @@ async fn dispatch(
         let job = verify_job(&signed, &intake.controller_key, now_unix())?;
         ensure!(!intake.stopping.load(Ordering::SeqCst), "stopping");
         ensure!(
-            intake.in_flight.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok(),
+            intake
+                .in_flight
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok(),
             "one job already active"
         );
-        let claimed = intake.store.lock().map_err(|_| anyhow::anyhow!("poisoned state lock"))?
+        let claimed = intake
+            .store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("poisoned state lock"))?
             .claim(job, &submission, now_unix());
         match claimed {
             Ok(pending) => {
@@ -168,7 +191,10 @@ async fn dispatch(
 }
 
 async fn run(args: RunArgs) -> anyhow::Result<()> {
-    ensure!(cfg!(target_os = "linux") && unsafe { libc::geteuid() } == 0, "production grader requires Linux root service");
+    ensure!(
+        cfg!(target_os = "linux") && unsafe { libc::geteuid() } == 0,
+        "production grader requires Linux root service"
+    );
     let (key, expected_output, binding) = identity(&args.identity)?;
     let controller_key = pubkey_from_hex(&binding.controller_public_key)?;
     let paths = HookPaths {
@@ -184,7 +210,8 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     // Run cleanup even when the ledger is missing/corrupt. The exclusive lock is already held.
     let cleanup = hooks.destroy_all().and_then(|observed| {
         ensure!(
-            observed.processes_gone && observed.storage_gone
+            observed.processes_gone
+                && observed.storage_gone
                 && observed.teardown_confirmed_at >= cleanup_started_at
                 && observed.teardown_confirmed_at <= now_unix(),
             "startup sandbox cleanup unconfirmed"
@@ -197,12 +224,16 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         return Err(error);
     }
     store.finish_recovery()?;
-    ensure!(!store.quarantined(), "grader quarantined; off-host operator recovery required");
+    ensure!(
+        !store.quarantined(),
+        "grader quarantined; off-host operator recovery required"
+    );
     let stopping = Arc::new(AtomicBool::new(false));
     let signal_flag = stopping.clone();
     let signals = tokio::spawn(async move {
-        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler");
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("SIGTERM handler");
         tokio::select! {
             _ = terminate.recv() => {},
             _ = tokio::signal::ctrl_c() => {},
@@ -238,7 +269,11 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
             if !matches!(outcome, Ok(Ok(()))) {
                 error!("grading job terminated without confirmed publication");
             }
-            let quarantined = worker_processor.store.lock().map(|s| s.quarantined()).unwrap_or(true);
+            let quarantined = worker_processor
+                .store
+                .lock()
+                .map(|s| s.quarantined())
+                .unwrap_or(true);
             if outcome.is_err() || quarantined {
                 worker_stopping.store(true, Ordering::SeqCst);
             }
@@ -253,17 +288,24 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         stopping: stopping.clone(),
         request_slots: Arc::new(Semaphore::new(8)),
     };
-    let app = Router::new().route("/dispatch", post(dispatch)).with_state(intake);
-    let listener = tokio::net::TcpListener::bind(DISPATCH_ADDR).await.context("bind fixed grader dispatch address")?;
+    let app = Router::new()
+        .route("/dispatch", post(dispatch))
+        .with_state(intake);
+    let listener = tokio::net::TcpListener::bind(DISPATCH_ADDR)
+        .await
+        .context("bind fixed grader dispatch address")?;
     info!(address = DISPATCH_ADDR, "grader dispatch ready");
     let shutdown = stopping.clone();
-    let served = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(async move {
-            while !shutdown.load(Ordering::SeqCst) {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await;
+    let served = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        while !shutdown.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
     stopping.store(true, Ordering::SeqCst);
     worker.await?;
     // Last independent check catches a processor panic or interrupted launch. Uncertainty is
@@ -281,7 +323,10 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "deadswitch_grader=debug".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "deadswitch_grader=debug".into()),
+        )
         .with_writer(std::io::stderr)
         .init();
     match Args::parse().cmd {
@@ -302,7 +347,9 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deadswitch_common::grading::{encode_dispatch, GradingJob, AUD_GRADER, INPUT_VERSION, JOB_TYPE, SCORER_VERSION, TASK_ID};
+    use deadswitch_common::grading::{
+        encode_dispatch, GradingJob, AUD_GRADER, INPUT_VERSION, JOB_TYPE, SCORER_VERSION, TASK_ID,
+    };
     use deadswitch_common::{random_hex, Signed, PROTO_V};
 
     struct Fixture {
@@ -341,48 +388,97 @@ mod tests {
 
         fn frame(&self, token: u64, bytes: &[u8]) -> Vec<u8> {
             let job = GradingJob {
-                v: PROTO_V, kind: JOB_TYPE.into(), aud: AUD_GRADER.into(),
-                job_id: format!("j{token}"), run_id: "r1".into(), incarnation: "i1".into(),
-                fencing_token: token, issued_at: now_unix(), expires_at: now_unix() + 120,
-                submission_digest: sha256_hex(bytes), task_id: TASK_ID.into(),
-                input_version: INPUT_VERSION.into(), scorer_version: SCORER_VERSION.into(),
+                v: PROTO_V,
+                kind: JOB_TYPE.into(),
+                aud: AUD_GRADER.into(),
+                job_id: format!("j{token}"),
+                run_id: "r1".into(),
+                incarnation: "i1".into(),
+                fencing_token: token,
+                issued_at: now_unix(),
+                expires_at: now_unix() + 120,
+                submission_digest: sha256_hex(bytes),
+                task_id: TASK_ID.into(),
+                input_version: INPUT_VERSION.into(),
+                scorer_version: SCORER_VERSION.into(),
             };
             encode_dispatch(&Signed::sign(&self.key, "controller", &job), bytes).unwrap()
         }
 
         async fn request(&self, frame: Vec<u8>, peer: [u8; 4]) -> (StatusCode, Vec<u8>) {
-            let request = Request::builder().method("POST").uri("/dispatch")
+            let request = Request::builder()
+                .method("POST")
+                .uri("/dispatch")
                 .header(header::CONTENT_TYPE, "application/octet-stream")
-                .body(Body::from(frame)).unwrap();
-            let response = dispatch(State(self.intake.clone()), ConnectInfo(SocketAddr::from((peer, 30000))), request).await;
+                .body(Body::from(frame))
+                .unwrap();
+            let response = dispatch(
+                State(self.intake.clone()),
+                ConnectInfo(SocketAddr::from((peer, 30000))),
+                request,
+            )
+            .await;
             let status = response.status();
             assert_eq!(response.headers()[header::CONNECTION], "close");
-            (status, to_bytes(response.into_body(), 100).await.unwrap().to_vec())
+            (
+                status,
+                to_bytes(response.into_body(), 100).await.unwrap().to_vec(),
+            )
         }
     }
 
     impl Drop for Fixture {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.root); }
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
     }
 
     #[tokio::test]
     async fn dispatch_ack_is_identical_for_invalid_valid_duplicate_busy_and_stopped() {
         let mut fixture = Fixture::new();
         let expected = (StatusCode::ACCEPTED, FIXED_DISPATCH_ACK.as_bytes().to_vec());
-        assert_eq!(fixture.request(b"not a signed dispatch".to_vec(), [10, 20, 0, 1]).await, expected);
+        assert_eq!(
+            fixture
+                .request(b"not a signed dispatch".to_vec(), [10, 20, 0, 1])
+                .await,
+            expected
+        );
         let frame = fixture.frame(1, b"candidate");
-        assert_eq!(fixture.request(frame.clone(), [10, 20, 0, 2]).await, expected);
+        assert_eq!(
+            fixture.request(frame.clone(), [10, 20, 0, 2]).await,
+            expected
+        );
         assert!(fixture.receiver.try_recv().is_err());
-        assert_eq!(fixture.request(frame.clone(), [10, 20, 0, 1]).await, expected);
+        assert_eq!(
+            fixture.request(frame.clone(), [10, 20, 0, 1]).await,
+            expected
+        );
         // Durable terminal claim is already on disk at acknowledgement, before any worker runs.
-        let state: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture.root.join("ledger.json")).unwrap()).unwrap();
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture.root.join("ledger.json")).unwrap())
+                .unwrap();
         assert_eq!(state["high_water"], 1);
         assert_eq!(state["claims"]["j1"]["status"], "execution_claimed");
         assert_eq!(fixture.request(frame, [10, 20, 0, 1]).await, expected);
-        assert_eq!(fixture.request(fixture.frame(2, b"different"), [10, 20, 0, 1]).await, expected);
-        assert_eq!(fixture.request(vec![0; MAX_DISPATCH_BYTES + 1], [10, 20, 0, 1]).await, expected);
+        assert_eq!(
+            fixture
+                .request(fixture.frame(2, b"different"), [10, 20, 0, 1])
+                .await,
+            expected
+        );
+        assert_eq!(
+            fixture
+                .request(vec![0; MAX_DISPATCH_BYTES + 1], [10, 20, 0, 1])
+                .await,
+            expected
+        );
         fixture.intake.stopping.store(true, Ordering::SeqCst);
-        assert_eq!(fixture.request(fixture.frame(3, b"another"), [10, 20, 0, 1]).await, expected);
+        assert_eq!(
+            fixture
+                .request(fixture.frame(3, b"another"), [10, 20, 0, 1])
+                .await,
+            expected
+        );
         assert!(fixture.receiver.try_recv().is_ok());
         assert!(fixture.receiver.try_recv().is_err());
     }
@@ -392,11 +488,16 @@ mod tests {
         let mut fixture = Fixture::new();
         let one = fixture.frame(1, b"candidate A");
         let two = fixture.frame(2, b"candidate B");
-        let (a, b) = tokio::join!(fixture.request(one, [10, 20, 0, 1]), fixture.request(two, [10, 20, 0, 1]));
+        let (a, b) = tokio::join!(
+            fixture.request(one, [10, 20, 0, 1]),
+            fixture.request(two, [10, 20, 0, 1])
+        );
         assert_eq!(a, b);
         assert!(fixture.receiver.try_recv().is_ok());
         assert!(fixture.receiver.try_recv().is_err());
-        let state: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture.root.join("ledger.json")).unwrap()).unwrap();
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture.root.join("ledger.json")).unwrap())
+                .unwrap();
         assert_eq!(state["claims"].as_object().unwrap().len(), 1);
     }
 

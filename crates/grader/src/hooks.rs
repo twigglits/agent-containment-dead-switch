@@ -29,7 +29,12 @@ pub struct HookPaths {
 
 impl HookPaths {
     pub fn validate(&self) -> anyhow::Result<()> {
-        for path in [&self.launch, &self.observe, &self.destroy, &self.destroy_all] {
+        for path in [
+            &self.launch,
+            &self.observe,
+            &self.destroy,
+            &self.destroy_all,
+        ] {
             ensure!(path.is_absolute(), "hook path must be absolute");
             crate::state::check_trusted_ancestors(path)?;
             let metadata = std::fs::symlink_metadata(path)?;
@@ -85,17 +90,38 @@ impl ShellHooks {
 }
 
 impl SandboxHooks for ShellHooks {
-    fn launch(&self, job: &JobContext, authority: &Authority<'_>) -> anyhow::Result<LaunchObservation> {
+    fn launch(
+        &self,
+        job: &JobContext,
+        authority: &Authority<'_>,
+    ) -> anyhow::Result<LaunchObservation> {
         authority.check()?;
         ensure!(
-            authority.deadline.remaining_ms(deadswitch_common::now_unix()) > 20_000,
+            authority
+                .deadline
+                .remaining_ms(deadswitch_common::now_unix())
+                > 20_000,
             "insufficient remaining lifecycle authority"
         );
-        self.invoke(&self.paths.launch, Some(job), Some(authority), Duration::from_secs(95))
+        self.invoke(
+            &self.paths.launch,
+            Some(job),
+            Some(authority),
+            Duration::from_secs(95),
+        )
     }
 
-    fn observe(&self, job: &JobContext, authority: &Authority<'_>) -> anyhow::Result<FrozenObservation> {
-        self.invoke(&self.paths.observe, Some(job), Some(authority), Duration::from_secs(5))
+    fn observe(
+        &self,
+        job: &JobContext,
+        authority: &Authority<'_>,
+    ) -> anyhow::Result<FrozenObservation> {
+        self.invoke(
+            &self.paths.observe,
+            Some(job),
+            Some(authority),
+            Duration::from_secs(5),
+        )
     }
 
     fn destroy(&self, job: &JobContext) -> anyhow::Result<TeardownObservation> {
@@ -140,11 +166,18 @@ pub(crate) fn run_bounded(
     let mut group = ChildGroup {
         child: command.spawn().context("hook spawn failed")?,
     };
-    let mut stdout = group.child.stdout.take().context("hook stdout unavailable")?;
+    let mut stdout = group
+        .child
+        .stdout
+        .take()
+        .context("hook stdout unavailable")?;
     let fd = stdout.as_raw_fd();
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     ensure!(flags >= 0, "hook pipe flags unavailable");
-    ensure!(unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0, "hook pipe nonblocking failed");
+    ensure!(
+        unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0,
+        "hook pipe nonblocking failed"
+    );
     let until = Instant::now() + max_time;
     let mut output = Vec::new();
     let mut child_exit = None;
@@ -164,7 +197,10 @@ pub(crate) fn run_bounded(
                 }
                 Ok(count) => {
                     output.extend_from_slice(&buffer[..count]);
-                    ensure!(output.len() <= MAX_HOOK_OUTPUT, "trusted hook output exceeded bound");
+                    ensure!(
+                        output.len() <= MAX_HOOK_OUTPUT,
+                        "trusted hook output exceeded bound"
+                    );
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,

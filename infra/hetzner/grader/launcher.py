@@ -113,6 +113,9 @@ def atomic_json(path, data, exclusive=False):
 def bounded_write(path, data, mode=0o400):
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, mode)
     with os.fdopen(fd, "wb") as out:
+        # Grader/systemd use umask0077. The root-owned guest seed deliberately needs read-only
+        # access for the dedicated QEMU uid; capture remains root-only 0400.
+        os.fchmod(out.fileno(), mode)
         out.write(data)
         out.flush()
         os.fsync(out.fileno())
@@ -266,6 +269,7 @@ def launch(config, job):
     atomic_json(path, state, exclusive=True)  # one-shot durable intent BEFORE any launch side effect
     work = config["sandbox_root"] / job["sandbox_id"]
     work.mkdir(mode=0o711)
+    work.chmod(0o711)  # preserve traversal for QEMU despite the service's private umask
     fsync_dir(config["sandbox_root"])
     base_st = config["base_image"].lstat()
     if not stat.S_ISREG(base_st.st_mode) or base_st.st_uid != 0 or base_st.st_mode & 0o222:

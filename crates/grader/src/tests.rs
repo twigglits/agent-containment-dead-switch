@@ -67,15 +67,42 @@ fn scorer_uses_only_exact_candidate_bytes_and_bound_artifact() {
         (b"42\n".as_slice(), Score::Correct),
         (b"41\n".as_slice(), Score::Incorrect),
         (b"PASS".as_slice(), Score::Incorrect),
-        (b"{\"PASS\":true,\"exit_code\":0,\"score\":1}".as_slice(), Score::Incorrect),
+        (
+            b"{\"PASS\":true,\"exit_code\":0,\"score\":1}".as_slice(),
+            Score::Incorrect,
+        ),
         (b"42\nPASS".as_slice(), Score::Incorrect),
         (b"".as_slice(), Score::Incorrect),
     ] {
-        assert_eq!(score_candidate(&job, submission, &job.submission_digest, output, b"42\n").unwrap(), expected);
+        assert_eq!(
+            score_candidate(&job, submission, &job.submission_digest, output, b"42\n").unwrap(),
+            expected
+        );
     }
-    assert!(score_candidate(&job, b"replacement", &job.submission_digest, b"42\n", b"42\n").is_err());
-    assert!(score_candidate(&job, submission, &sha256_hex(b"replacement"), b"42\n", b"42\n").is_err());
-    assert!(score_candidate(&job, submission, &job.submission_digest, &vec![0; MAX_CAPTURED_OUTPUT_BYTES + 1], b"42\n").is_err());
+    assert!(score_candidate(
+        &job,
+        b"replacement",
+        &job.submission_digest,
+        b"42\n",
+        b"42\n"
+    )
+    .is_err());
+    assert!(score_candidate(
+        &job,
+        submission,
+        &sha256_hex(b"replacement"),
+        b"42\n",
+        b"42\n"
+    )
+    .is_err());
+    assert!(score_candidate(
+        &job,
+        submission,
+        &job.submission_digest,
+        &vec![0; MAX_CAPTURED_OUTPUT_BYTES + 1],
+        b"42\n"
+    )
+    .is_err());
 }
 
 #[test]
@@ -84,7 +111,10 @@ fn submitted_code_is_never_imported_executed_or_interpreted_by_scorer() {
     let marker = dir.0.join("executed");
     let bytes = format!("#!/bin/sh\ntouch '{}'\nprintf 'PASS'\n", marker.display()).into_bytes();
     let job = fixture_job(&bytes, 1);
-    assert_eq!(score_candidate(&job, &bytes, &job.submission_digest, b"42\n", b"42\n").unwrap(), Score::Correct);
+    assert_eq!(
+        score_candidate(&job, &bytes, &job.submission_digest, b"42\n", b"42\n").unwrap(),
+        Score::Correct
+    );
     assert!(!marker.exists());
 }
 
@@ -135,12 +165,20 @@ fn replace_private(path: &Path, data: &[u8]) {
 }
 
 impl SandboxHooks for MockHooks {
-    fn launch(&self, ctx: &JobContext, authority: &Authority<'_>) -> anyhow::Result<LaunchObservation> {
+    fn launch(
+        &self,
+        ctx: &JobContext,
+        authority: &Authority<'_>,
+    ) -> anyhow::Result<LaunchObservation> {
         self.events.lock().unwrap().push("launch");
         // Proves admission persists the fencing+terminal authorization BEFORE launch.
-        let ledger: serde_json::Value = serde_json::from_slice(&fs::read(self.root.join("ledger.json"))?)?;
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(self.root.join("ledger.json"))?)?;
         assert_eq!(ledger["high_water"], ctx.job.fencing_token);
-        assert_eq!(ledger["claims"][&ctx.job.job_id]["status"], "execution_claimed");
+        assert_eq!(
+            ledger["claims"][&ctx.job.job_id]["status"],
+            "execution_claimed"
+        );
         assert!(ledger["claims"][&ctx.job.job_id]["result"].is_null());
         state::verify_staged(ctx)?;
         if self.fault == Fault::LaunchError {
@@ -187,7 +225,12 @@ impl SandboxHooks for MockHooks {
             anyhow::bail!("missing observation");
         }
         let mut observed = FrozenObservation {
-            execution: self.last_execution.lock().unwrap().clone().unwrap_or_else(|| execution(ctx)),
+            execution: self
+                .last_execution
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| execution(ctx)),
             frozen: true,
             captured_output_digest: sha256_hex(&self.output),
             capture_bytes: self.output.len() as u64,
@@ -241,18 +284,31 @@ impl ResultPublisher for MockPublisher {
     fn publish(&self, result: &Signed, authority: &Authority<'_>) -> anyhow::Result<()> {
         authority.check()?;
         self.events.lock().unwrap().push("publish");
-        let parsed: GradingResult = result.verify(&SigningKey::from_bytes(&[2; 32]).verifying_key(), RESULT_TYPE, AUD_GRADING_RESULTS)?;
-        assert_eq!(self.store.lock().unwrap().committed_result(&parsed.job_id), Some(result));
+        let parsed: GradingResult = result.verify(
+            &SigningKey::from_bytes(&[2; 32]).verifying_key(),
+            RESULT_TYPE,
+            AUD_GRADING_RESULTS,
+        )?;
+        assert_eq!(
+            self.store.lock().unwrap().committed_result(&parsed.job_id),
+            Some(result)
+        );
         assert_eq!(fs::read_dir(self.root.join("jobs"))?.count(), 0);
         self.published.lock().unwrap().push(result.clone());
-        if self.fail { anyhow::bail!("ambiguous response loss"); }
+        if self.fail {
+            anyhow::bail!("ambiguous response loss");
+        }
         Ok(())
     }
 }
 
 type TestProcessor = Processor<MockHooks, MockPublisher>;
 
-fn harness(fault: Fault, output: &[u8], publication_fails: bool) -> (TestDir, TestProcessor, PendingJob) {
+fn harness(
+    fault: Fault,
+    output: &[u8],
+    publication_fails: bool,
+) -> (TestDir, TestProcessor, PendingJob) {
     let (dir, store) = initialized();
     let events = Arc::new(Mutex::new(Vec::new()));
     let stopping = Arc::new(AtomicBool::new(false));
@@ -272,7 +328,11 @@ fn harness(fault: Fault, output: &[u8], publication_fails: bool) -> (TestDir, Te
         fail: publication_fails,
     };
     let bytes = b"#!/bin/sh\nprintf 'PASS'\n";
-    let pending = store.lock().unwrap().claim(fixture_job(bytes, 1), bytes, now_unix()).unwrap();
+    let pending = store
+        .lock()
+        .unwrap()
+        .claim(fixture_job(bytes, 1), bytes, now_unix())
+        .unwrap();
     let processor = Processor {
         hooks,
         publisher,
@@ -288,9 +348,18 @@ fn harness(fault: Fault, output: &[u8], publication_fails: bool) -> (TestDir, Te
 fn freeze_and_confirmed_teardown_and_commit_precede_publication() {
     let (_dir, processor, pending) = harness(Fault::None, b"42\n", false);
     processor.process(pending).unwrap();
-    assert_eq!(*processor.hooks.events.lock().unwrap(), ["launch", "freeze", "destroy", "publish"]);
+    assert_eq!(
+        *processor.hooks.events.lock().unwrap(),
+        ["launch", "freeze", "destroy", "publish"]
+    );
     let result = processor.publisher.published.lock().unwrap()[0].clone();
-    let parsed: GradingResult = result.verify(&processor.scorer_key.verifying_key(), RESULT_TYPE, AUD_GRADING_RESULTS).unwrap();
+    let parsed: GradingResult = result
+        .verify(
+            &processor.scorer_key.verifying_key(),
+            RESULT_TYPE,
+            AUD_GRADING_RESULTS,
+        )
+        .unwrap();
     assert_eq!(parsed.score, Score::Correct);
     assert_eq!(parsed.captured_output_digest, sha256_hex(b"42\n"));
     assert!(!result.payload.contains("POISON-A"));
@@ -298,11 +367,21 @@ fn freeze_and_confirmed_teardown_and_commit_precede_publication() {
 
 #[test]
 fn wrong_and_forged_pass_execute_but_only_receive_trusted_incorrect_score() {
-    for bytes in [b"41\n".as_slice(), b"PASS".as_slice(), b"{\"score\":1}".as_slice()] {
+    for bytes in [
+        b"41\n".as_slice(),
+        b"PASS".as_slice(),
+        b"{\"score\":1}".as_slice(),
+    ] {
         let (_dir, processor, pending) = harness(Fault::None, bytes, false);
         processor.process(pending).unwrap();
         let result = processor.publisher.published.lock().unwrap()[0].clone();
-        let parsed: GradingResult = result.verify(&processor.scorer_key.verifying_key(), RESULT_TYPE, AUD_GRADING_RESULTS).unwrap();
+        let parsed: GradingResult = result
+            .verify(
+                &processor.scorer_key.verifying_key(),
+                RESULT_TYPE,
+                AUD_GRADING_RESULTS,
+            )
+            .unwrap();
         assert_eq!(parsed.score, Score::Incorrect);
     }
 }
@@ -310,10 +389,20 @@ fn wrong_and_forged_pass_execute_but_only_receive_trusted_incorrect_score() {
 #[test]
 fn all_anomalies_destroy_and_release_no_result() {
     for fault in [
-        Fault::LaunchError, Fault::WrongLaunchDigest, Fault::ObserveError, Fault::ObserveChanged,
-        Fault::CaptureDigest, Fault::CaptureOverflow, Fault::CaptureWritable, Fault::CaptureSymlink,
-        Fault::SubmissionChanged, Fault::Timeout, Fault::DestroyError, Fault::UnconfirmedDestroy,
-        Fault::Shutdown, Fault::Expiry,
+        Fault::LaunchError,
+        Fault::WrongLaunchDigest,
+        Fault::ObserveError,
+        Fault::ObserveChanged,
+        Fault::CaptureDigest,
+        Fault::CaptureOverflow,
+        Fault::CaptureWritable,
+        Fault::CaptureSymlink,
+        Fault::SubmissionChanged,
+        Fault::Timeout,
+        Fault::DestroyError,
+        Fault::UnconfirmedDestroy,
+        Fault::Shutdown,
+        Fault::Expiry,
     ] {
         let (_dir, processor, mut pending) = harness(fault, b"42\n", false);
         if fault == Fault::Expiry {
@@ -322,8 +411,16 @@ fn all_anomalies_destroy_and_release_no_result() {
         assert!(processor.process(pending).is_err());
         assert!(processor.hooks.events.lock().unwrap().contains(&"destroy"));
         assert!(processor.publisher.published.lock().unwrap().is_empty());
-        assert!(processor.store.lock().unwrap().committed_result("job-1").is_none());
-        assert_eq!(processor.store.lock().unwrap().quarantined(), matches!(fault, Fault::DestroyError | Fault::UnconfirmedDestroy));
+        assert!(processor
+            .store
+            .lock()
+            .unwrap()
+            .committed_result("job-1")
+            .is_none());
+        assert_eq!(
+            processor.store.lock().unwrap().quarantined(),
+            matches!(fault, Fault::DestroyError | Fault::UnconfirmedDestroy)
+        );
     }
 }
 
@@ -340,12 +437,19 @@ fn uncertain_teardown_quarantines_future_jobs_and_survives_restart() {
     let (dir, processor, pending) = harness(Fault::UnconfirmedDestroy, b"42\n", false);
     assert!(processor.process(pending).is_err());
     let bytes = b"different candidate";
-    assert!(processor.store.lock().unwrap().claim(fixture_job(bytes, 2), bytes, now_unix()).is_err());
+    assert!(processor
+        .store
+        .lock()
+        .unwrap()
+        .claim(fixture_job(bytes, 2), bytes, now_unix())
+        .is_err());
     drop(processor);
     let mut reopened = open_store(&dir.0);
     reopened.finish_recovery().unwrap();
     assert!(reopened.quarantined());
-    assert!(reopened.claim(fixture_job(bytes, 2), bytes, now_unix()).is_err());
+    assert!(reopened
+        .claim(fixture_job(bytes, 2), bytes, now_unix())
+        .is_err());
 }
 
 #[test]
@@ -354,7 +458,13 @@ fn ambiguous_delivery_retains_identical_committed_result_and_never_relaunches() 
     let bytes = fs::read(&pending.context.submission_path).unwrap();
     let job = pending.context.job.clone();
     assert!(processor.process(pending).is_err());
-    let committed = processor.store.lock().unwrap().committed_result(&job.job_id).unwrap().clone();
+    let committed = processor
+        .store
+        .lock()
+        .unwrap()
+        .committed_result(&job.job_id)
+        .unwrap()
+        .clone();
     assert_eq!(processor.publisher.published.lock().unwrap()[0], committed);
     drop(processor);
     let mut reopened = open_store(&dir.0);
@@ -369,7 +479,12 @@ fn fresh_job_cannot_see_previous_sandbox_files() {
     let old = pending.context.clone();
     processor.process(pending).unwrap();
     let bytes = b"candidate B";
-    let pending_b = processor.store.lock().unwrap().claim(fixture_job(bytes, 2), bytes, now_unix()).unwrap();
+    let pending_b = processor
+        .store
+        .lock()
+        .unwrap()
+        .claim(fixture_job(bytes, 2), bytes, now_unix())
+        .unwrap();
     assert_ne!(old.sandbox_id, pending_b.context.sandbox_id);
     assert!(!old.job_dir.exists());
     assert!(!pending_b.context.capture_path.exists());
@@ -381,17 +496,41 @@ fn durable_claims_fence_duplicates_conflicts_and_delayed_authorization() {
     let (_dir, store) = initialized();
     let bytes = b"candidate A";
     let job = fixture_job(bytes, 4);
-    let pending = store.lock().unwrap().claim(job.clone(), bytes, now_unix()).unwrap();
-    assert!(store.lock().unwrap().claim(fixture_job(b"B", 5), b"B", now_unix()).is_err());
+    let pending = store
+        .lock()
+        .unwrap()
+        .claim(job.clone(), bytes, now_unix())
+        .unwrap();
+    assert!(store
+        .lock()
+        .unwrap()
+        .claim(fixture_job(b"B", 5), b"B", now_unix())
+        .is_err());
     store.lock().unwrap().abort(&job.job_id, false).unwrap();
     state::remove_job_files(&pending.context).unwrap();
-    assert!(store.lock().unwrap().claim(job.clone(), bytes, now_unix()).is_err());
-    assert!(store.lock().unwrap().claim(fixture_job(bytes, 5), bytes, now_unix()).is_err());
-    assert!(store.lock().unwrap().claim(fixture_job(b"B", 3), b"B", now_unix()).is_err());
+    assert!(store
+        .lock()
+        .unwrap()
+        .claim(job.clone(), bytes, now_unix())
+        .is_err());
+    assert!(store
+        .lock()
+        .unwrap()
+        .claim(fixture_job(bytes, 5), bytes, now_unix())
+        .is_err());
+    assert!(store
+        .lock()
+        .unwrap()
+        .claim(fixture_job(b"B", 3), b"B", now_unix())
+        .is_err());
     let mut delayed = fixture_job(b"B", 5);
     delayed.issued_at -= 6;
     delayed.expires_at -= 6;
-    assert!(store.lock().unwrap().claim(delayed, b"B", now_unix()).is_err());
+    assert!(store
+        .lock()
+        .unwrap()
+        .claim(delayed, b"B", now_unix())
+        .is_err());
 }
 
 #[test]
@@ -399,17 +538,25 @@ fn restart_never_relaunches_ambiguous_execution_and_preserves_fencing() {
     let (dir, store) = initialized();
     let bytes = b"candidate A";
     let job = fixture_job(bytes, 7);
-    let pending = store.lock().unwrap().claim(job.clone(), bytes, now_unix()).unwrap();
+    let pending = store
+        .lock()
+        .unwrap()
+        .claim(job.clone(), bytes, now_unix())
+        .unwrap();
     drop(store);
     let mut reopened = open_store(&dir.0);
     assert!(reopened.busy());
-    assert!(reopened.claim(fixture_job(b"B", 8), b"B", now_unix()).is_err());
+    assert!(reopened
+        .claim(fixture_job(b"B", 8), b"B", now_unix())
+        .is_err());
     reopened.finish_recovery().unwrap();
     assert!(!pending.context.job_dir.exists());
     assert_eq!(reopened.high_water(), 7);
     assert!(!reopened.busy());
     assert!(reopened.claim(job, bytes, now_unix()).is_err());
-    assert!(reopened.claim(fixture_job(b"B", 7), b"B", now_unix()).is_err());
+    assert!(reopened
+        .claim(fixture_job(b"B", 7), b"B", now_unix())
+        .is_err());
 }
 
 #[test]
@@ -435,10 +582,15 @@ fn state_requires_explicit_initialization_and_rejects_loss_corruption_and_key_re
 fn clock_rollback_cannot_reset_durable_authority() {
     let (dir, store) = initialized();
     let bytes = b"candidate";
-    assert!(store.lock().unwrap().claim(fixture_job(bytes, 1), bytes, now_unix() - 1).is_err());
+    assert!(store
+        .lock()
+        .unwrap()
+        .claim(fixture_job(bytes, 1), bytes, now_unix() - 1)
+        .is_err());
     drop(store);
     let ledger_path = dir.0.join("ledger.json");
-    let mut ledger: serde_json::Value = serde_json::from_slice(&fs::read(&ledger_path).unwrap()).unwrap();
+    let mut ledger: serde_json::Value =
+        serde_json::from_slice(&fs::read(&ledger_path).unwrap()).unwrap();
     ledger["wall_floor"] = serde_json::json!(now_unix() + 60);
     fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
     assert!(Store::open(StateLock::acquire(&dir.0).unwrap(), &binding()).is_err());
@@ -449,7 +601,10 @@ fn private_capture_rejects_symlink_hardlink_exposure_and_writable_files() {
     let (dir, _store) = initialized();
     let path = dir.0.join("capture");
     state::write_new(&path, b"42\n", 0o400).unwrap();
-    assert_eq!(state::read_private_file(&path, 4096, true).unwrap(), b"42\n");
+    assert_eq!(
+        state::read_private_file(&path, 4096, true).unwrap(),
+        b"42\n"
+    );
     symlink(&path, dir.0.join("symlink")).unwrap();
     assert!(state::read_private_file(&dir.0.join("symlink"), 4096, true).is_err());
     fs::hard_link(&path, dir.0.join("hardlink")).unwrap();
@@ -473,12 +628,19 @@ fn actual_flat_hook_json_is_strict_and_requires_all_observations() {
     value.as_object_mut().unwrap().remove("frozen");
     assert!(serde_json::from_value::<FrozenObservation>(value).is_err());
     assert!(serde_json::from_str::<TeardownObservation>(r#"{"sandbox_id":"x","processes_gone":true,"storage_gone":true,"teardown_confirmed_at":1,"guest_report":"PASS"}"#).is_err());
-    assert!(serde_json::from_str::<GlobalTeardownObservation>(r#"{"processes_gone":true,"teardown_confirmed_at":1}"#).is_err());
+    assert!(serde_json::from_str::<GlobalTeardownObservation>(
+        r#"{"processes_gone":true,"teardown_confirmed_at":1}"#
+    )
+    .is_err());
 }
 
 #[test]
 fn hook_timeout_kills_hanging_process_group_and_bounds_output_floods() {
-    for shell in ["sleep 60", "sleep 60 & wait", "while :; do printf 'xxxxxxxxxxxxxxxx'; done"] {
+    for shell in [
+        "sleep 60",
+        "sleep 60 & wait",
+        "while :; do printf 'xxxxxxxxxxxxxxxx'; done",
+    ] {
         let mut command = Command::new("/bin/sh");
         command.arg("-c").arg(shell);
         let start = Instant::now();
@@ -492,11 +654,23 @@ fn hook_shutdown_and_both_clock_expiry_are_enforced_independently() {
     for (mono, wall, shutdown) in [
         (Instant::now(), now_unix() + 120, false),
         (Instant::now() + Duration::from_secs(120), now_unix(), false),
-        (Instant::now() + Duration::from_secs(120), now_unix() + 120, true),
+        (
+            Instant::now() + Duration::from_secs(120),
+            now_unix() + 120,
+            true,
+        ),
     ] {
         let stop = AtomicBool::new(shutdown);
-        let deadline = Deadline { mono, wall, fencing_token: 1, epoch: 0 };
-        let authority = Authority { deadline: &deadline, stopping: &stop };
+        let deadline = Deadline {
+            mono,
+            wall,
+            fencing_token: 1,
+            epoch: 0,
+        };
+        let authority = Authority {
+            deadline: &deadline,
+            stopping: &stop,
+        };
         let mut command = Command::new("/bin/sh");
         command.arg("-c").arg("sleep 60");
         assert!(hooks::run_bounded(command, Some(&authority), Duration::from_millis(100)).is_err());

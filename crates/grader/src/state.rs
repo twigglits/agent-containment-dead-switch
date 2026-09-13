@@ -141,10 +141,18 @@ impl Store {
         self.ledger.high_water
     }
 
-    pub fn claim(&mut self, job: GradingJob, submission: &[u8], now: u64) -> anyhow::Result<PendingJob> {
+    pub fn claim(
+        &mut self,
+        job: GradingJob,
+        submission: &[u8],
+        now: u64,
+    ) -> anyhow::Result<PendingJob> {
         ensure!(!self.quarantined() && !self.busy(), "grader unavailable");
         ensure!(now >= self.ledger.wall_floor, "trusted clock rolled back");
-        ensure!(self.ledger.claims.len() < MAX_CLAIMS, "grader lifetime claim cap");
+        ensure!(
+            self.ledger.claims.len() < MAX_CLAIMS,
+            "grader lifetime claim cap"
+        );
         ensure!(
             !self.ledger.claims.contains_key(&job.job_id)
                 && !self
@@ -187,14 +195,25 @@ impl Store {
     pub fn commit(&mut self, job_id: &str, result: &Signed) -> anyhow::Result<()> {
         ensure!(!self.quarantined(), "grader quarantined");
         let mut next = self.ledger.clone();
-        ensure!(deadswitch_common::now_unix() >= next.wall_floor, "trusted clock rolled back");
+        ensure!(
+            deadswitch_common::now_unix() >= next.wall_floor,
+            "trusted clock rolled back"
+        );
         next.wall_floor = deadswitch_common::now_unix();
         let claim = next.claims.get_mut(job_id).context("unknown job")?;
-        ensure!(claim.status == ClaimStatus::ExecutionClaimed, "terminal job");
+        ensure!(
+            claim.status == ClaimStatus::ExecutionClaimed,
+            "terminal job"
+        );
         // Bind again at the durable release boundary, including the local high-water fencing.
         ensure!(claim.job.fencing_token == next.high_water, "superseded job");
         let key = deadswitch_common::pubkey_from_hex(&next.binding.scorer_public_key)?;
-        deadswitch_common::grading::verify_result(result, &key, &claim.job, deadswitch_common::now_unix())?;
+        deadswitch_common::grading::verify_result(
+            result,
+            &key,
+            &claim.job,
+            deadswitch_common::now_unix(),
+        )?;
         claim.status = ClaimStatus::ResultCommitted;
         claim.result = Some(result.clone());
         self.persist(next)
@@ -248,7 +267,11 @@ impl Store {
             sandbox_id: sandbox_id.to_owned(),
             submission_path: job_dir.join("submission.bin"),
             capture_path: job_dir.join("capture.bin"),
-            wall_timeout_secs: job.expires_at.saturating_sub(deadswitch_common::now_unix()).saturating_sub(20).clamp(1, 90),
+            wall_timeout_secs: job
+                .expires_at
+                .saturating_sub(deadswitch_common::now_unix())
+                .saturating_sub(20)
+                .clamp(1, 90),
             job_dir,
         }
     }
@@ -266,15 +289,27 @@ impl Store {
 fn validate_binding(binding: &Binding) -> anyhow::Result<()> {
     deadswitch_common::pubkey_from_hex(&binding.controller_public_key)?;
     deadswitch_common::pubkey_from_hex(&binding.scorer_public_key)?;
-    ensure!(binding.controller_public_key != binding.scorer_public_key, "controller and scorer must have distinct keys");
-    ensure!(valid_digest(&binding.expected_output_digest), "expected output binding");
+    ensure!(
+        binding.controller_public_key != binding.scorer_public_key,
+        "controller and scorer must have distinct keys"
+    );
+    ensure!(
+        valid_digest(&binding.expected_output_digest),
+        "expected output binding"
+    );
     Ok(())
 }
 
 fn validate_ledger(ledger: &Ledger, binding: &Binding) -> anyhow::Result<()> {
     validate_binding(binding)?;
-    ensure!(ledger.v == 1 && &ledger.binding == binding, "grader state binding mismatch");
-    ensure!(deadswitch_common::now_unix() >= ledger.wall_floor, "persisted clock rollback");
+    ensure!(
+        ledger.v == 1 && &ledger.binding == binding,
+        "grader state binding mismatch"
+    );
+    ensure!(
+        deadswitch_common::now_unix() >= ledger.wall_floor,
+        "persisted clock rollback"
+    );
     ensure!(ledger.claims.len() <= MAX_CLAIMS, "grader state bound");
     let mut tokens = BTreeSet::new();
     let mut digests = BTreeSet::new();
@@ -286,7 +321,10 @@ fn validate_ledger(ledger: &Ledger, binding: &Binding) -> anyhow::Result<()> {
         claim.job.validate(claim.job.issued_at)?;
         ensure!(
             claim.sandbox_id.len() == 32
-                && claim.sandbox_id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                && claim
+                    .sandbox_id
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
             "sandbox identity"
         );
         ensure!(
@@ -304,8 +342,16 @@ fn validate_ledger(ledger: &Ledger, binding: &Binding) -> anyhow::Result<()> {
                     deadswitch_common::grading::RESULT_TYPE,
                     deadswitch_common::grading::AUD_GRADING_RESULTS,
                 )?;
-                deadswitch_common::grading::verify_result(result, &scorer_key, &claim.job, parsed.issued_at)?;
-                ensure!(parsed.sandbox_id == claim.sandbox_id, "result sandbox mismatch");
+                deadswitch_common::grading::verify_result(
+                    result,
+                    &scorer_key,
+                    &claim.job,
+                    parsed.issued_at,
+                )?;
+                ensure!(
+                    parsed.sandbox_id == claim.sandbox_id,
+                    "result sandbox mismatch"
+                );
             }
             _ => anyhow::bail!("invalid claim transition"),
         }
@@ -320,7 +366,9 @@ fn validate_ledger(ledger: &Ledger, binding: &Binding) -> anyhow::Result<()> {
 fn check_private_directory(path: &Path) -> anyhow::Result<()> {
     let m = std::fs::symlink_metadata(path)?;
     ensure!(
-        m.file_type().is_dir() && m.uid() == unsafe { libc::geteuid() } && m.permissions().mode() & 0o077 == 0,
+        m.file_type().is_dir()
+            && m.uid() == unsafe { libc::geteuid() }
+            && m.permissions().mode() & 0o077 == 0,
         "state directory must be private and owned by the grader"
     );
     Ok(())
@@ -343,14 +391,23 @@ pub fn check_trusted_ancestors(path: &Path) -> anyhow::Result<()> {
 }
 
 fn open_private(path: &Path, read_only_mode: bool) -> anyhow::Result<File> {
-    let f = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)?;
+    let f = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
     let m = f.metadata()?;
     ensure!(
-        m.is_file() && m.nlink() == 1 && m.uid() == unsafe { libc::geteuid() } && m.permissions().mode() & 0o077 == 0,
+        m.is_file()
+            && m.nlink() == 1
+            && m.uid() == unsafe { libc::geteuid() }
+            && m.permissions().mode() & 0o077 == 0,
         "private regular singly-linked owned file required"
     );
     if read_only_mode {
-        ensure!(m.permissions().mode() & 0o222 == 0, "immutable file required");
+        ensure!(
+            m.permissions().mode() & 0o222 == 0,
+            "immutable file required"
+        );
     }
     Ok(f)
 }
@@ -393,7 +450,10 @@ fn sync_dir(path: &Path) -> anyhow::Result<()> {
 pub fn remove_job_files(ctx: &JobContext) -> anyhow::Result<()> {
     match std::fs::symlink_metadata(&ctx.job_dir) {
         Ok(meta) => {
-            ensure!(meta.is_dir() && !meta.file_type().is_symlink(), "job directory replaced");
+            ensure!(
+                meta.is_dir() && !meta.file_type().is_symlink(),
+                "job directory replaced"
+            );
             std::fs::remove_dir_all(&ctx.job_dir)?;
             sync_dir(ctx.job_dir.parent().context("job directory parent")?)?;
             ensure!(!ctx.job_dir.exists(), "job files remain");
@@ -407,7 +467,10 @@ pub fn remove_job_files(ctx: &JobContext) -> anyhow::Result<()> {
 /// Only private immutable bytes make it to the launcher; no caller-supplied filename is involved.
 pub fn verify_staged(ctx: &JobContext) -> anyhow::Result<()> {
     let bytes = read_private_file(&ctx.submission_path, MAX_SUBMISSION_BYTES, true)?;
-    ensure!(sha256_hex(&bytes) == ctx.job.submission_digest, "staged digest changed");
+    ensure!(
+        sha256_hex(&bytes) == ctx.job.submission_digest,
+        "staged digest changed"
+    );
     Ok(())
 }
 

@@ -123,8 +123,16 @@ pub struct GlobalTeardownObservation {
 /// Production hooks enforce their own process, storage, credential and network boundary. Trait
 /// implementations cannot turn guest-written assertions into trusted observations.
 pub trait SandboxHooks: Send + Sync {
-    fn launch(&self, job: &JobContext, authority: &Authority<'_>) -> anyhow::Result<LaunchObservation>;
-    fn observe(&self, job: &JobContext, authority: &Authority<'_>) -> anyhow::Result<FrozenObservation>;
+    fn launch(
+        &self,
+        job: &JobContext,
+        authority: &Authority<'_>,
+    ) -> anyhow::Result<LaunchObservation>;
+    fn observe(
+        &self,
+        job: &JobContext,
+        authority: &Authority<'_>,
+    ) -> anyhow::Result<FrozenObservation>;
     /// Destruction remains authorized after expiry or shutdown; it is independently time-bounded.
     fn destroy(&self, job: &JobContext) -> anyhow::Result<TeardownObservation>;
     fn destroy_all(&self) -> anyhow::Result<GlobalTeardownObservation>;
@@ -261,7 +269,11 @@ impl<H: SandboxHooks, P: ResultPublisher> Processor<H, P> {
         result
     }
 
-    fn run_and_freeze(&self, ctx: &JobContext, authority: &Authority<'_>) -> anyhow::Result<Frozen> {
+    fn run_and_freeze(
+        &self,
+        ctx: &JobContext,
+        authority: &Authority<'_>,
+    ) -> anyhow::Result<Frozen> {
         authority.check()?;
         let submitted = state::read_private_file(&ctx.submission_path, MAX_SUBMISSION_BYTES, true)?;
         ctx.job
@@ -286,7 +298,8 @@ impl<H: SandboxHooks, P: ResultPublisher> Processor<H, P> {
             observed.execution == launch && observed.frozen,
             "observation changed before freeze"
         );
-        let captured = state::read_private_file(&ctx.capture_path, MAX_CAPTURED_OUTPUT_BYTES, true)?;
+        let captured =
+            state::read_private_file(&ctx.capture_path, MAX_CAPTURED_OUTPUT_BYTES, true)?;
         let digest = sha256_hex(&captured);
         ensure!(
             observed.capture_bytes == captured.len() as u64

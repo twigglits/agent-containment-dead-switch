@@ -80,6 +80,16 @@ class GraderHookTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 launcher.create_seed(bad)
 
+    def test_private_service_umask_does_not_hide_readonly_seed_from_qemu(self):
+        previous = os.umask(0o077)
+        try:
+            launcher.bounded_write(self.root / "seed", b"opaque seed", mode=0o444)
+            launcher.bounded_write(self.root / "capture", b"42\n")
+        finally:
+            os.umask(previous)
+        self.assertEqual((self.root / "seed").stat().st_mode & 0o777, 0o444)
+        self.assertEqual((self.root / "capture").stat().st_mode & 0o777, 0o400)
+
     def test_qemu_profile_is_software_no_network_no_host_secret_or_monitor(self):
         args = launcher.qemu_command(self.config, self.job)
         self.assertEqual(args[args.index("-machine") + 1], "q35,accel=tcg")

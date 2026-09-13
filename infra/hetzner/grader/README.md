@@ -43,7 +43,8 @@ at `/opt/deadswitch-grader/base.raw`, with its SHA-256 in `launcher.json`. Never
 output, scorer key, provider credentials, canaries, cloud-init credentials or host mounts in this
 base. The guest's root disk is always a fresh qcow2 overlay backed by that pinned raw image. No
 shared writable cache, seed with credentials, guest networking, host filesystem share, monitor or
-QMP endpoint is exposed.
+QMP endpoint is exposed. Keep the base image's directory ancestry root-owned and traversable by
+the dedicated QEMU uid (0711 or 0755); the private scorer/config directory remains 0700.
 
 The tiny fixture uses task `tiny-sum`, input version `1`, scorer version `1`, input bytes `17 25\n`
 and expected bytes `42\n`. Install `fixture/expected-output.bin` only on the trusted host as
