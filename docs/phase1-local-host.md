@@ -182,7 +182,7 @@ denial path is exercised.
   forwarding exists to bypass netfilter). No MMDS, no vsock device, no second drive with executables.
 - QEMU's QMP socket lives in a supervisor-owned `0700` directory; QEMU runs with `-sandbox on` seccomp, virtio-only devices, a guest CPU without `+vmx`/`+svm` (no
   nested virt to VM1), and a per-run qcow2 overlay (disposable). No sshd in the VM1 image.
-- nftables installed **before** VM1 boots (`infra/firecracker/vm1-net.sh`): `ip_forward=0`, IPv6
+- nftables installed **before** VM1 boots (`infra/qemu/vm1-net.sh`): `ip_forward=0`, IPv6
   disabled on tap0, forward chain policy drop, input: accept only `iifname tap0 ip saddr 172.16.0.2
   ip daddr 172.16.0.1 tcp dport 3128`, accept ARP only for 172.16.0.2, drop fragments
   (`ip frag-off != 0`), counter-drop everything else. Root in VM1 changing IP/MAC/routes cannot make

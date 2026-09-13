@@ -3,7 +3,7 @@
 # Cloud controller node, bound to the WireGuard interface only (never the public NIC). Run from the
 # ops workstation after `terraform apply` and after the WireGuard mesh is wired.
 #
-# Ships: the cross-compiled aarch64-musl controller binary, a systemd unit, and reuses the controller
+# Ships: the cross-compiled x86_64-musl controller binary, a systemd unit, and reuses the controller
 # keypair/operator-token from Phase 1 (~/.deadswitch/controller) so the same pubkey stays authoritative
 # — OR generates fresh ones on the node (choose per deployment; here we upload the existing ones so the
 # enrolled hostd keys and CTL_PUB carry over). Secrets are scp'd over SSH, never baked into images.
@@ -12,18 +12,18 @@
 #   CONTROLLER_IP    public IPv4 of the Cloud controller (terraform output controller_ip)
 #   CONTROLLER_WGIP  controller WireGuard IP            (default 10.20.0.1)
 #   SSH_KEY          ops private key                    (default ~/.deadswitch/phase2/ops_ed25519)
-#   BIN              controller binary                  (default target/aarch64-unknown-linux-musl/release/deadswitch-controller)
+#   BIN              controller binary                  (default target/x86_64-unknown-linux-musl/release/deadswitch-controller)
 set -euo pipefail
 CONTROLLER_IP="${CONTROLLER_IP:?set CONTROLLER_IP (terraform output controller_ip)}"
 CONTROLLER_WGIP="${CONTROLLER_WGIP:-10.20.0.1}"
 SSH_KEY="${SSH_KEY:-$HOME/.deadswitch/phase2/ops_ed25519}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-BIN="${BIN:-$REPO/target/aarch64-unknown-linux-musl/release/deadswitch-controller}"
+BIN="${BIN:-$REPO/target/x86_64-unknown-linux-musl/release/deadswitch-controller}"
 CDIR="${CDIR:-$HOME/.deadswitch/controller}"
 SSH=(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=yes "root@$CONTROLLER_IP")
 SCP=(scp -i "$SSH_KEY" -o StrictHostKeyChecking=yes)
 
-[ -x "$BIN" ] || { echo "controller binary missing: $BIN (cargo zigbuild --release --target aarch64-unknown-linux-musl -p deadswitch-controller)"; exit 1; }
+[ -x "$BIN" ] || { echo "controller binary missing: $BIN (cargo zigbuild --release --target x86_64-unknown-linux-musl -p deadswitch-controller)"; exit 1; }
 for f in controller.key operator.token hostd_pubkeys.txt; do [ -f "$CDIR/$f" ] || { echo "missing $CDIR/$f (run Phase 1 keygen/enroll first)"; exit 1; }; done
 
 python3 - "$CONTROLLER_IP" "$CONTROLLER_WGIP" <<'PYCFG'
@@ -67,4 +67,4 @@ UNIT
 echo "==> health check over WireGuard"
 "${SSH[@]}" "curl -fsS http://${CONTROLLER_WGIP}:7100/health && echo"
 echo "controller deployed at ${CONTROLLER_WGIP}:7100; operator API via SSH to 127.0.0.1:7101"
-echo "UNARMED: independent actuator/expiry/physical confirmation integration remains a Phase 2 code blocker"
+echo "Controller deployed; off-host cut/kill is operator-invoked via ds_kill.py. Automatic external expiry and a hardware termination observer are separate extensions."

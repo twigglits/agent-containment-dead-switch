@@ -38,11 +38,12 @@ pub fn validate(model: &str, body: &[u8]) -> Result<Value, &'static str> {
     if o.get("n").is_some_and(|n| n.as_u64() != Some(1)) {
         return Err("n must be 1");
     }
-    // In particular, -1 must not become an unlimited backend generation request.
+    // Ollama runners only enforce positive num_predict limits. Neither zero nor a negative
+    // value may become an unlimited backend generation request.
     if let Some(mt) = o.get("max_tokens") {
         match mt.as_u64() {
-            Some(n) if n <= 1024 => {}
-            _ => return Err("max_tokens must be an integer in [0,1024]"),
+            Some(1..=1024) => {}
+            _ => return Err("max_tokens must be an integer in [1,1024]"),
         }
     }
     let messages = o
@@ -200,6 +201,7 @@ mod tests {
         for value in [
             Value::Null,
             json!(-1),
+            json!(0),
             json!(1025),
             json!(4096),
             json!(u64::MAX),
@@ -209,10 +211,10 @@ mod tests {
         ] {
             assert_eq!(
                 backend_request("m", &request_with("max_tokens", value)).unwrap_err(),
-                "max_tokens must be an integer in [0,1024]"
+                "max_tokens must be an integer in [1,1024]"
             );
         }
-        for tokens in [0, 1, 512, 1024] {
+        for tokens in [1, 512, 1024] {
             let backend = backend_request("m", &request_with("max_tokens", json!(tokens))).unwrap();
             assert_eq!(
                 backend["options"],

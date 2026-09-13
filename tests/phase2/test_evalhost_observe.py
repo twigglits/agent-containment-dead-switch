@@ -55,6 +55,24 @@ class ObservationTests(unittest.TestCase):
             with patch.object(Path, 'read_text', side_effect=[enabled, FileNotFoundError()]):
                 self.assertEqual(OBSERVE.host_nested_enabled(), enabled in ('Y', '1'))
 
+    def test_host_network_backends_and_foreign_taps_are_not_healthy(self):
+        for flag, value in (
+            ('-serial', 'tcp:10.20.0.2:11434'),
+            ('-serial', 'mon:stdio'),
+            ('-display', 'vnc=10.20.0.3:0'),
+            ('-netdev', 'tap,id=n0,ifname=other0,script=no,downscript=no'),
+            ('-pidfile', '/other/vm2.pid'),
+        ):
+            with self.subTest(flag=flag, value=value):
+                argv = self.argv()
+                argv[argv.index(flag) + 1] = value
+                self.assertEqual(self.config(argv),
+                                 dict(nested_virt=None, port_forwards=None, writable_mounts=None))
+        argv = self.argv()
+        argv[argv.index('-netdev') + 1] = 'tap,id=n0,ifname=custom0,script=no,downscript=no'
+        self.assertEqual(OBSERVE.vm2_config(argv, Path('/vm2/vm2.qcow2'), True, 'custom0'),
+                         dict(nested_virt=True, port_forwards=0, writable_mounts=0))
+
     def test_unobservable_or_dead_process_cannot_claim_running(self):
         for error, running in [(FileNotFoundError, False), (PermissionError, None), (ValueError, None)]:
             with patch.object(Path, 'read_text', side_effect=error):

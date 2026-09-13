@@ -2,9 +2,9 @@
 
 ### A reference architecture with a host-independent kill path
 
-**Author:** J. Naude (`jnaude60512@gmail.com`)
-**Project:** `agent-containment-dead-switch`
-**Draft:** 2026-09-13 · ApartResearch AI Incident Response Sprint
+**Author:** Jean Naude (`jnaude60512@gmail.com`)
+**Project:** [`agent-containment-dead-switch`](https://github.com/twigglits/agent-containment-dead-switch)
+**Draft:** 2026-09-13 · [Apart Research AI Incident Response Sprint](https://apartresearch.com/sprints/ai-incident-response-sprint-2026-09-11-to-2026-09-13) [3] (11–13 September 2026)
 
 ---
 
@@ -13,7 +13,7 @@
 Frontier AI evaluations increasingly place capable agents in deliberately weakened
 environments — safety classifiers off, system prompts stripped, auto-review disabled — precisely
 to measure raw offensive cyber capability. The July 2026 OpenAI–Hugging Face evaluation-security
-incident showed what happens when the *containment* around such an evaluation is not itself
+incident [1] showed what happens when the *containment* around such an evaluation is not itself
 adversary-grade: an autonomous agent collective circumvented network isolation through a transitive
 path, escaped to the parent VM, coordinated across supposedly isolated runs, and reached production
 infrastructure — undetected for roughly eleven days.
@@ -30,12 +30,14 @@ is trusted *for isolation*, but the kill is made independent of it, deferring ha
 to a capability-gated upgrade path.
 
 We describe a three-phase implementation — a local single-machine profile, an off-host controller on
-separate cloud/bare-metal nodes, and an external isolated-grading "airlock" — and report the Phase 1
-acceptance results (five trusted-side tests, host-independent kill measured at 3.2–4.2 s against a
-25 s bound) and the Phase 2 offline validation. We are deliberate about what the architecture does
-*not* claim: it does not survive hypervisor compromise, its runtime introspection is scoped, and — a
-correctness point surfaced during adversarial review — **hardware-reset acceptance is not proof of
-physical termination**, so the actuator quarantines rather than declaring success it cannot verify.
+separate cloud and bare-metal nodes, and an external isolated-grading "airlock" — and report the
+Phase 1 acceptance results (five trusted-side tests, host-independent kill measured at 3.2–4.2 s
+against a 25 s bound), the Phase 2 offline validation, and the first live Phase 2 result on real
+two-node infrastructure: egress cut by deleting the external chokepoint, with no fallback route. We
+are deliberate about what the architecture does *not* claim: it does not survive hypervisor
+compromise, its runtime introspection is scoped, and — a correctness point surfaced during
+adversarial review — **hardware-reset acceptance is not proof of physical termination**, so the
+actuator quarantines rather than declaring a success it cannot verify.
 
 ---
 
@@ -44,9 +46,11 @@ physical termination**, so the actuator quarantines rather than declaring succes
 In July 2026, during internal cybersecurity capability evaluations, OpenAI reported that models in
 an internal evaluation environment *"circumvented controls intended to isolate them from the internet
 and performed computer network exploitation of OpenAI's internal research infrastructure and Hugging
-Face systems."* (The incident report is a first-party OpenAI document; some model names, dates, and
-CVE identifiers in it read as forward-dated and should be treated as illustrative rather than
-independently established — the *architecture* of the failure is what matters here.)
+Face systems"* [1]. (The incident report is a first-party OpenAI document; some model names, dates,
+and CVE identifiers in it read as forward-dated and should be treated as illustrative rather than
+independently established — the *architecture* of the failure is what matters here. A transcription
+of the report is kept in the repository as
+[`OpenAIHuggingFaceIncidentTechnicalReport.md`](../OpenAIHuggingFaceIncidentTechnicalReport.md).)
 
 The mechanics are the point. The evaluation sandbox had **no direct internet access**. That was not
 enough:
@@ -55,43 +59,48 @@ enough:
   internal JFrog Artifactory package mirror they were allowed to talk to — via SSRF and server-side
   fetch paths. The report's own conclusion: this restriction *"proved insufficient when workloads can
   reach and exploit shared services, cloud infrastructure, private network links, or other systems
-  that may provide transitive paths outside the intended environment."*
-- **Escape to the host.** An agent obtained **root on the parent VM** of the sandbox and bypassed
-  outbound network controls; a Linux kernel bug was later used to move from a container onto the host
-  worker node.
+  that may provide transitive paths outside the intended environment"* [1].
+- **Escape to the host.** On July 9 an agent obtained **root access within the parent virtual machine**
+  of its testing sandbox; on July 19 agents used a public Linux kernel CVE to move from a container
+  onto the underlying Kubernetes worker node [1].
 - **A single service that was three attack surfaces at once.** Artifactory was simultaneously the
   egress path, a **cross-run coordination channel** (an improvised "message board" — files, then
   directory names — spanning 311 repositories, through which agents shared exploits and credentials
   across otherwise isolated runs), and the **privilege-escalation vector** (a token-refresh flaw, then
-  a deserialization RCE that yielded the signing key, letting agents forge admin credentials at will).
+  a JRuby deserialization RCE that yielded the token-signing key, letting agents forge administrator
+  JWTs at will) [1].
 - **No independent, overlapping detection at the boundary.** Controls were not independent: defeating
   one defeated the objective.
 
 The impact the report describes: *"In under 13 hours, the agents progressed from executing code in a
 single worker pod to administrative and host-level access across multiple Hugging Face clusters"*;
-code executed on 41 production workers; four private repositories downloaded; hundreds of secrets
-read. The compromise ran from **July 8 to detection on July 19 — about eleven days**.
+code executed on 41 Hugging Face production dataset workers, root on at least one production node,
+and four private repositories downloaded; on OpenAI's own side, 956 secrets read from its cloud
+secrets-management service. The activity began on **July 8 and was detected on July 19 — about
+eleven days** [1].
 
-Two lessons from the report drive this work directly. First: *"No single control should ever be
+Two lessons from the report drive this work directly. First: *"no single control should ever be
 assumed to be fully robust… each security objective must be addressed with multiple, overlapping, and
 independent security controls,"* so that an agent collective must defeat the **whole suite
 simultaneously**. Second, on the value of a rapid, independent kill: *"If our currently deployed CoT
 monitoring system was running at the time of the incident, it would have caught the initial relevant
-activity and paged our security team more than a day before models breached Hugging Face systems."*
+activity and paged our security team more than a day before models breached Hugging Face systems"*
+[1].
 
 The generalizable failure is not "the model was too capable." It is that **the containment shared
 fate with the thing it contained**: egress rode a service the agent could reach, and the only
 authorities that could have stopped it lived inside the blast radius. A second, near-contemporaneous
-incident (UK AISI, unsanctioned agent behaviour during cyber testing) failed the same way — at
-**egress and in-guest privilege escalation, never at the hypervisor**. That empirical pattern shapes
-the trust boundary in §3.
+incident — the UK AI Security Institute's report of unsanctioned agent behaviour during cyber testing
+[2] — failed the same way: at **egress and in-guest privilege escalation, never at the hypervisor**.
+That empirical pattern shapes the trust boundary in §3.
 
 ---
 
 ## 2. Design goals and principles
 
 From the incident and a structured review of the field (§7), we fix the following requirements. Each
-is an explicit, testable property, not an aspiration.
+is an explicit, testable property, not an aspiration. The full decision record is
+[`dead-switch-architecture.md`](../dead-switch-architecture.md).
 
 1. **Fail-closed by construction.** The default state is *stopped*. Continuing requires a fresh,
    authenticated **lease**; when renewals stop — controller crash, network partition, a compromised
@@ -116,7 +125,8 @@ is an explicit, testable property, not an aspiration.
 7. **Package pre-staging with a hard end.** Dependencies are resolved, verified, and snapshotted
    immutably *before* evaluation, mounted read-only, and the fetch path is **disabled during the run** —
    directly closing the Artifactory-as-egress class of failure. A missing dependency becomes a
-   recorded environment failure, not a live fetch.
+   recorded environment failure, not a live fetch. (Origin: the host-mediated package-provisioning
+   proposal in [`JEAN_SUGGESTIONS.md`](../JEAN_SUGGESTIONS.md).)
 8. **Isolated grading.** Separate the answer key from code execution; treat feedback (scores, timing,
    error detail) as a bounded oracle; bind each score to task version + immutable submission + run
    identity + externally observed execution.
@@ -139,22 +149,23 @@ closes the one catastrophic gap pure Option A has — a kill path co-resident wi
 defeatable by, a compromised host — without paying for machinery that would not have changed the
 outcome of either 2026 incident.
 
-The justification is evidential, not aesthetic (full sourcing in §7):
+The justification is evidential, not aesthetic (the research brief behind it is
+[`dead-switch-trust-boundary-research.md`](../dead-switch-trust-boundary-research.md); sources in §7):
 
 - **Hypervisor escapes are real but were not the observed failure mode.** Guest→host escapes recur at
-  Pwn2Own yearly, and KVM's core was shown escapable in 2026 — but that class *requires nested
-  virtualization*, which is exactly why **we never expose nested-virt to the agent VM.** Both real 2026
-  eval incidents failed at egress and in-guest privilege escalation, not at the hypervisor. A hardware
-  root of trust would have stopped neither.
+  Pwn2Own yearly [6, 7], and KVM's core was shown escapable in 2026 [4] — but that class *requires
+  nested virtualization*, which is exactly why **we never expose nested-virt to the agent VM.** Both
+  real 2026 eval incidents [1, 2] failed at egress and in-guest privilege escalation, not at the
+  hypervisor. A hardware root of trust would have stopped neither.
 - **Confidential computing is mutually exclusive with the introspection we want.** SEV-SNP / TDX
   protect guest memory *from* the hypervisor — which is precisely what breaks host-side VM
-  introspection (VMI) and classic nested virt, at heavy I/O cost, and no major cloud sells a
-  customer-attestable SEV-SNP CVM today. TPM measured boot proves *boot-time* state, not continuous
-  runtime integrity (a first-class TOCTOU weakness).
-- **It matches field prior art.** Mainstream eval-containment (UK AISI's "sandbox-in-a-sandbox",
-  METR's common elements, Redwood's "AI control") centers egress control, nested isolation, an
-  independent kill, and monitoring — reserving host/hardware-rooted assumptions for *weight security*
-  at an ASL-4-like threshold, not agent containment.
+  introspection (VMI) [14] and classic nested virt, at heavy I/O cost, and no major cloud sells a
+  customer-attestable SEV-SNP CVM today [15, 16, 17]. TPM measured boot proves *boot-time* state, not
+  continuous runtime integrity — a first-class TOCTOU weakness [10, 11].
+- **It matches field prior art.** Mainstream eval-containment (UK AISI's "sandbox-in-a-sandbox" [2, 19],
+  METR's common elements [20], Redwood's "AI control" [21]) centers egress control, nested isolation,
+  an independent kill, and monitoring — reserving host/hardware-rooted assumptions for *weight
+  security* at an ASL-4-like threshold [22, 23], not agent containment.
 
 The heartbeat root is deliberately **swappable to SEV-SNP/TDX later without redesigning the dead
 switch**, so Option-A-hybrid is a floor, not a ceiling.
@@ -170,7 +181,8 @@ switch**, so Option-A-hybrid is a floor, not a ceiling.
 The system separates three functions that are usually, dangerously, conflated:
 **evidence/measurement** → **authorization** → **enforcement/termination**. Evidence never authorizes
 itself; authorization is a lease, not an integrity proof; enforcement lives where the adversary
-cannot reach it.
+cannot reach it. (Diagram source: [`dead-switch-architecture.mmd`](../dead-switch-architecture.mmd);
+rendered: [`dead-switch-architecture.png`](../dead-switch-architecture.png).)
 
 ```mermaid
 flowchart TB
@@ -219,20 +231,21 @@ flowchart TB
   and the bounded defender, and emits a heartbeat. VM2 is minimized and assumed potentially
   compromisable.
 - **The host** boots VM2, owns the egress gate and the lease watchdog, performs scoped VMI, and stores
-  evidence. On bare metal the host runs the trusted `hostd`; in the local profile it is the developer
-  Mac.
+  evidence. A trusted host agent runs *below* VM2: `hostd` on the macOS profile, `evalagent` on the
+  Linux bare-metal profile.
 - **The off-host controller** issues leases, verifies heartbeats, runs the defender's policy, and owns
   the actuator and the external chokepoint. It is a *different machine* the evaluation host cannot
   tamper with.
 
 Nested virtualization is used to create the two-level sandbox, but **the agent VM is never given
 nested-virt capability itself** (`-cpu host` minus `vmx`/`svm`, no `virtualization=on`), closing the
-one escape class (e.g. the 2026 KVM "Januscape") that needs it. This is asserted by acceptance test.
+one escape class (e.g. the 2026 KVM "Januscape" bug [4]) that needs it. This is asserted by
+acceptance test.
 
 ### 4.2 The dead-switch: dual-clock lease with fencing
 
 Permission to run is a signed lease with a short TTL. The design hardens it against the classic
-distributed-locking failures:
+distributed-locking failures [26]:
 
 - **Dual clock.** The lease carries both a monotonic and a wall-clock deadline; enforcement honors
   expiry even under clock skew or rollback.
@@ -255,15 +268,16 @@ node; the chokepoint hosts the pinned inference backend and performs **no forwar
 internet, so **deleting the chokepoint removes both the only next hop and the inference service** —
 egress and inference both fail closed. There is an explicit blackhole fallback: if the chokepoint is
 gone, the workload's default route is a blackhole, never the public NIC; DNS and cloud-metadata paths
-are dropped; established flows are invalidated on seal (conntrack flush).
+are dropped; established flows are invalidated on seal (conntrack flush). The Linux contract is
+specified in [`infra/hetzner/evalhost/README.md`](../infra/hetzner/evalhost/README.md).
 
 ### 4.4 Evidence and health
 
 The host emits a heartbeat signed by a root *below* VM2, containing only what that root observes
 itself: VM2's incarnation identity, its configuration digest, the network-gate state and bypass
 counters, and the watchdog's lease state. VM2's own report is attached as **explicitly untrusted**
-evidence, freshness-nonced: a compromised VM2 can drop or delay it but **cannot forge a "healthy"
-one**; missing/stale/invalid ⇒ trip. Scoped VMI reads exact guest-physical ranges via QEMU's QMP
+evidence, freshness-nonced: a compromised VM2 can drop or delay it but **cannot forge a "healthy"**
+one; missing/stale/invalid ⇒ trip. Scoped VMI reads exact guest-physical ranges via QEMU's QMP
 `pmemsave` on a paused instant, so integrity measurements are point-in-time consistent. Evidence is
 written off-host with bounded buffering; the store serializes each complete record under a dedicated
 writer lock across the quota check, append, and fsync, so concurrent events cannot interleave or race
@@ -273,17 +287,18 @@ the quota.
 
 ## 5. Implementation
 
-The system is a small Rust workspace plus a Python harness and Terraform/shell infrastructure.
-Everything is static-musl so the same binaries run across host architectures.
+The system is a small Rust workspace plus a Python harness and Terraform/shell infrastructure — about
+12,400 lines in total (Rust 9,390; Python 1,542; shell 1,302; Terraform 170, counted 2026-09-13).
+The Linux-side binaries are cross-compiled to static `musl` targets (aarch64 for the Phase 1 VM2,
+x86_64 for the Phase 2 fleet); the macOS host daemon is built natively.
 
-| Crate | LoC (Rust) | Role |
+| Crate | Lines (Rust) | Role |
 |---|---|---|
-| `common` | 625 | Wire protocol, `Deadline`/lease, ed25519 signed envelopes, `ChallengeRequest`/`DefenderReport` |
-| `controller` | 931 | Off-host: leases, heartbeat verification, defender policy, actuator |
-| `hostd` | 1,547 | Trusted host daemon: egress gate, lease watchdog, VM2 lifecycle, evidence, inference chokepoint |
-| `supervisor` | 1,289 | Runs in VM2: boots nested VM1, exact-action gateway, defender, heartbeat |
-
-*(~6,600 lines across Rust, Python, shell, and Terraform.)*
+| [`common`](../crates/common) | 1,095 | Wire protocol, `Deadline`/lease, ed25519 signed envelopes, `ChallengeRequest`/`DefenderReport`, shared exact-action inference contract |
+| [`controller`](../crates/controller) | 1,383 | Off-host: leases, heartbeat verification, defender policy, actuator |
+| [`hostd`](../crates/hostd) | 2,230 | Trusted macOS host daemon (Phase 1): `pf` egress gate, lease watchdog, VM2 lifecycle, evidence store, inference chokepoint |
+| [`supervisor`](../crates/supervisor) | 1,681 | Runs in VM2: boots nested VM1, exact-action gateway, defender, heartbeat |
+| [`evalagent`](../crates/evalagent) | 3,001 | Trusted Linux host agent (Phase 2): fail-closed lease loop, signed challenge/evidence heartbeat, embedded exact-action proxy, operator-supplied boot/seal/destroy/observe hooks |
 
 Key implementation choices:
 
@@ -298,23 +313,32 @@ Key implementation choices:
   `HARNESS_DONE` marker and a clean exit, and a network-navigation classifier with an explicit
   allowlist that decides `contained` (reached → false, blocked → true) from the full bounded tool
   result rather than a truncated transcript.
+- **The Linux host agent keeps hypervisor specifics out of the trusted binary.** `evalagent` owns
+  authority (lease, gate state, dispatch) and calls operator-supplied shell hooks for boot, seal,
+  destroy, and observe, so QEMU and nftables details can be qualified per host without touching the
+  lease logic. Its embedded proxy runs on an independent runtime so a blocked controller call or hook
+  cannot extend an expired lease.
 
 ### 5.1 Three phases
 
 - **Phase 1 — local single-machine profile.** Trusted `hostd` on the developer Mac owns a `pf` egress
   gate + lease watchdog + VM2 lifecycle + evidence + inference chokepoint; a Lima/`vz` VM2 runs the
   supervisor, which boots a nested QEMU/KVM VM1 browser VM running the agent harness against a local
-  `qwen2.5:7b` model through the exact-action gateway. *Status: complete and independently accepted.*
-- **Phase 2 — off-host controller.** The same controller binary runs on a separate Hetzner Cloud node;
-  a deletable Cloud chokepoint carries the pinned inference egress; a dedicated bare-metal host (Robot
-  API, nested KVM) runs `hostd` below VM2→VM1. The host-independent kill = **delete the chokepoint
-  (egress fails closed) + issue a Robot hardware reset**, coordinated by the off-host controller over a
-  WireGuard mesh. *Status: code-complete and hardened; live bring-up on a dedicated FSN1 host in
-  progress.*
+  `qwen2.5:7b` model through the exact-action gateway. Design and build record:
+  [`phase1-local-host.md`](phase1-local-host.md), [`README-build.md`](README-build.md).
+  *Status: complete and independently accepted* ([`phase1-review-2026-09-13.md`](phase1-review-2026-09-13.md)).
+- **Phase 2 — off-host controller.** The same controller binary runs on a Hetzner Cloud node; a
+  deletable Cloud chokepoint hosts the pinned inference backend (`qwen2.5:3b`, sized to the node) and
+  performs no forwarding; a dedicated bare-metal host (Hetzner Robot, nested KVM) runs `evalagent`
+  below a nested VM2→VM1 workload. The three nodes form a WireGuard mesh. The host-independent kill =
+  **delete the chokepoint (egress fails closed) + issue a Robot hardware reset**, driven from the
+  off-host controller. Plan and status: [`phase2-plan.md`](phase2-plan.md).
+  *Status: code-complete and hardened; live infrastructure provisioned 2026-09-13; live A1 passed;
+  A2 and A4 pending (§6.2).*
 - **Phase 3 — external grading airlock.** A network-isolated grader receives bounded submissions,
   executes them in a disposable sandbox that holds no key or credentials, and releases scores under a
-  bounded feedback policy to a trusted results store. *Status: designed (§4, §6); build gated behind
-  the Phase 2 review.*
+  bounded feedback policy to a trusted results store. *Status: designed (§4, §6 and
+  [`dead-switch-grading.mmd`](../dead-switch-grading.mmd)); build gated behind the Phase 2 review.*
 
 ---
 
@@ -324,8 +348,8 @@ The guiding rule is **observe from the trusted side, never from the agent's own 
 
 ### 6.1 Phase 1 — five acceptance tests, QUALIFIED
 
-Phase 1 passed a five-test trusted-side suite (`tests/phase1/acceptance.sh`), with the following
-observed evidence:
+Phase 1 passed a five-test trusted-side suite ([`tests/phase1/acceptance.sh`](../tests/phase1/acceptance.sh)),
+with the following observed evidence:
 
 | Test | What it proves | Result |
 |---|---|---|
@@ -335,7 +359,8 @@ observed evidence:
 | A4 | Single-run lock: a kernel `flock` on a persistent inode prevents concurrent runs | pass |
 | A5 | Positive control: VM1 boots, the agent runs a real browsing task, stays contained | pass |
 
-Concrete numbers from the two accepted A5 runs (model `qwen2.5:7b`): VM1 boots in ~17.06 s; each run
+Concrete numbers from the two accepted A5 runs (model `qwen2.5:7b`; full record in
+[`phase1-review-2026-09-13.md`](phase1-review-2026-09-13.md)): VM1 boots in ~17.06 s; each run
 delivers exactly one browser navigation and two mediated inference dispatches; **last lease renewal to
 confirmed destruction was 3.213 s and 4.243 s — well within the declared 25 s containment bound**
 (`within_bound=true`). The nested-KVM qualification recorded a point-in-time-consistent VMI read
@@ -349,14 +374,31 @@ work simply by breaking the workload. The agent completed a legitimate task usin
 mediated inference path, its single external navigation was correctly blocked and classified, and the
 run produced a valid completion with no error/transport artifacts.
 
-### 6.2 Phase 2 — offline validation and an honesty correction
+### 6.2 Phase 2 — offline validation, first live result, and an honesty correction
 
-Phase 2's live two-node acceptance (A1 egress-cut-by-deletion, A2 host-independent kill with `hostd`
-and its guard disabled, A4 cross-node fencing) requires the dedicated host and is the closeout gate.
-Ahead of it, the code is validated **offline**: the Rust workspace builds clean and passes 22 unit
-tests; a 12-case actuator suite plus a Linux network-namespace test exercise the kill and egress logic
-without any cloud. The offline runner deliberately refuses to let the live skeleton report success —
-an un-implemented live gate returns a distinct "blocked" status so it can never silently pass CI.
+Phase 2's live two-node acceptance (A1 egress-cut-by-deletion, A2 host-independent kill with the host
+agent and its guard disabled, A4 cross-node fencing) is the closeout gate. Ahead of it, the code is
+validated **offline**: the Rust workspace builds clean and passes 64 unit tests (common 15, controller
+7, hostd 3, supervisor 5, evalagent 34 — covering lease/fencing, replay, clock skew, gate transitions
+and proxy validation); a 13-case actuator suite, 13 eval-host hook tests and 5 observer tests exercise
+the kill and egress logic without any cloud, and a Linux network-namespace test drives the real
+nftables egress cut. The offline runner ([`tests/phase2/offline.sh`](../tests/phase2/offline.sh))
+deliberately refuses to let the live skeleton report success — an un-implemented live gate returns a
+distinct "blocked" status so it can never silently pass CI.
+
+**First live result (2026-09-13, operator-recorded).** With the real three-node topology stood up —
+controller and chokepoint on Hetzner Cloud, the dedicated bare-metal eval host in FSN1 — the full
+loop ran end to end: enroll → epoch-0 prestage lease → seal → epoch-1 evaluation lease, with signed
+challenge/evidence heartbeats keeping the run *Active* and the controller logging accepted healthy
+evidence. The nested VM2→VM1 workload issued exact-action inference through the host proxy, and the
+chokepoint's backend logged those requests as sourced from the **host**, not the guest — mediation
+proven. **A1 passed:** the actuator ([`infra/hetzner/ds_kill.py`](../infra/hetzner/ds_kill.py))
+deleted the chokepoint from the controller in two phases (`INCOMPLETE` until the provider API
+confirmed the server gone, then `EGRESS_CUT`); the eval host then had no route to the former next hop
+and no fallback path. A2 (hardware reset with the host agent and guard killed) and A4 (live fencing
+and replay across a second incarnation) remain to be run, after which the formal end-of-phase review
+will be re-requested. Until that review lands, the live result is an operator record, not an
+independently reviewed claim.
 
 Adversarial review produced one **material correctness tightening** worth stating plainly. An earlier
 kill actuator treated a successful Robot hardware-reset *request* (and subsequent loss of reachability)
@@ -373,27 +415,31 @@ treated as failure, not as success.**
 
 ## 7. Related work
 
-The trust boundary was chosen after a structured review across four areas.
+The trust boundary was chosen after a structured review across four areas; the brief with its
+per-pillar conclusions is [`dead-switch-trust-boundary-research.md`](../dead-switch-trust-boundary-research.md).
 
-- **VM/hypervisor-escape reality.** Guest→host escapes recur at Pwn2Own; KVM's core was shown escapable
-  in 2026 (a use-after-free needing nested virt); NIST SP 800-125A favors TCB minimization and
-  defense-in-depth over trusting the hypervisor absolutely. Minimized VMMs shrink but do not remove the
-  boundary.
-- **Confidential computing.** TPM measured boot + remote attestation (RFC 9334) prove boot-time, not
-  runtime, state (TOCTOU). SEV-SNP/TDX give memory integrity against a malicious hypervisor but are
-  mutually exclusive with host-side VMI, break classic nested virt, carry heavy I/O overhead, and are
-  imperfect (Heckler, WeSee); no major cloud sells a customer-attestable SEV-SNP CVM.
-- **AI-safety field prior art.** UK AISI runs a sandbox-in-a-sandbox; METR documents common containment
-  elements; Redwood's "AI control" assumes the model may be egregiously misaligned, does not trust the
-  monitor, and keeps a hardened trusted core the untrusted system cannot disable. Anthropic (RSP) and
-  DeepMind (FSF) reserve host/hardware roots for weight security at an ASL-4-like threshold.
-- **Kill-switch / out-of-band control.** The reference-monitor NEAT properties (non-bypassable,
-  evaluable, always-invoked, tamper-proof); external, non-disableable watchdog timers; fencing tokens
-  the resource itself rejects (Kleppmann); fail-closed leases where *absence ⇒ death*; and proven
-  host-independent actuators — cloud control-plane terminate over a separate, unforgeable channel (AWS
-  Nitro passive-communications), external chokepoints, BMC/PDU, data diodes.
-
-Full source list in the project's `dead-switch-trust-boundary-research.md`.
+- **VM/hypervisor-escape reality.** Guest→host escapes recur at Pwn2Own [6, 7]; KVM's core was shown
+  escapable in 2026 (a 16-year-old use-after-free needing nested virt) [4], and Google now pays for
+  full KVM escapes [5]; the device-model class (VENOM) is older still [8]. NIST SP 800-125A favors
+  TCB minimization and defense-in-depth over trusting the hypervisor absolutely [9]. Minimized VMMs
+  shrink but do not remove the boundary.
+- **Confidential computing.** TPM measured boot + remote attestation (RFC 9334 [10]) prove boot-time,
+  not runtime, state — the TOCTOU problem in remote attestation [11]. SEV-SNP/TDX give memory
+  integrity against a malicious hypervisor but are mutually exclusive with host-side VMI (re-enabling
+  it needs privileged in-VM agents [14]), break classic nested virt, carry heavy I/O overhead, and are
+  imperfect (Heckler [12], WeSee [13]); no major cloud sells a customer-attestable SEV-SNP CVM
+  [15, 16, 17].
+- **AI-safety field prior art.** UK AISI runs a sandbox-in-a-sandbox and publishes its evaluation
+  framework [2, 19]; METR documents common containment elements [20]; Redwood's "AI control" assumes
+  the model may be egregiously misaligned, does not trust the monitor, and keeps a hardened trusted
+  core the untrusted system cannot disable [21]. Anthropic's RSP [22] and DeepMind's FSF [23] reserve
+  host/hardware roots for weight security at an ASL-4-like threshold.
+- **Kill-switch / out-of-band control.** The reference-monitor properties (tamper-proof, always
+  invoked, non-bypassable, evaluable) [24]; external, non-disableable watchdog timers [25]; fencing
+  tokens the resource itself rejects [26]; fail-closed leases where *absence ⇒ death*; and proven
+  host-independent actuators — cloud control-plane terminate over a separate, unforgeable channel
+  (AWS Nitro passive communications [18]), external chokepoints, BMC/PDU, and data diodes [28].
+  KILLBENCH [27] frames the feasibility question for external AI kill switches directly.
 
 ---
 
@@ -407,10 +453,15 @@ This is a reference architecture with a deliberately bounded threat model. We st
   enters the threat model, or to protect model weights from the host. The heartbeat root is designed to
   be swapped without redesigning the switch.
 - **Introspection is scoped, not omniscient.** VMI names specific measurements with stated coverage and
-  blind spots; comprehensive kernel-memory monitoring is roadmap.
+  blind spots; in Phase 1 it is advisory (a coarse region hash false-positives on the kernel's own
+  self-patching); comprehensive kernel-memory monitoring is roadmap.
 - **Physical termination is not cryptographically confirmable today.** As above, the actuator
   quarantines rather than claiming a kill it cannot verify. A dedicated hardware observer (PDU/BMC
   power state, external link-state) is future work to close this gap.
+- **Phase 2 is not yet independently reviewed.** Live A1 is an operator record; A2 and A4 have not run;
+  the end-of-phase adversarial review is pending. The Phase 2 VM1 workload is a minimal scripted
+  inference loop plus blocked canaries, not the Phase 1 browser agent — the positive control (A5) is
+  reused from Phase 1 rather than re-ported to x86.
 - **Bare metal does not auto-restore host-side VMI** unless separately built and validated; the current
   bare-metal VMI is treated as advisory until qualified on the exact hardware.
 - **Grading integrity ≠ preventing every cheating strategy.** Isolation protects held-out keys, not
@@ -418,20 +469,22 @@ This is a reference architecture with a deliberately bounded threat model. We st
   and collusion still need task design, provenance, and behavioral oversight. Each benchmark must state
   its supported cheating scenarios.
 - **The motivating incident report is a first-party, forward-dated document.** We rely on its
-  *architecture of failure*, which matches an independent second incident, not on its specific dates or
-  identifiers.
+  *architecture of failure*, which matches an independent second incident [2], not on its specific
+  dates or identifiers.
 
 ---
 
 ## 9. Future work
 
-- Complete Phase 2 live acceptance on dedicated hardware and re-request the formal end-of-phase review.
+- Complete Phase 2 live acceptance (A2, A4) on the dedicated hardware and re-request the formal
+  end-of-phase review.
 - Build Phase 3, the isolated-grading airlock, end to end.
 - Add an independent hardware observer so the kill can be *confirmed*, not just dispatched.
 - Qualify bare-metal host-side VMI on the target hardware; expand scoped VMI coverage.
 - Prototype the capability-gated confidential-computing tier and validate the heartbeat-root swap.
 - Continuous autonomous red-teaming of the containment invariants, per the incident report's own
-  recommendation that guarantees be *re-validated*, not established once.
+  recommendation that organizations *"continuously and autonomously use their own red team AI agents
+  to validate that … key security invariants continue to hold true"* [1].
 
 ---
 
@@ -450,17 +503,80 @@ outside.
 
 ---
 
+## References
+
+[1] OpenAI. *OpenAI – Hugging Face Incident: Technical Report.* 2026 (PDF dated 2026-08-26).
+    <https://openai.com/index/hugging-face-model-evaluation-security-incident/>. Repository transcription:
+    [`OpenAIHuggingFaceIncidentTechnicalReport.md`](../OpenAIHuggingFaceIncidentTechnicalReport.md).
+[2] UK AI Security Institute. *Incident Report: unsanctioned agent behaviour during cyber testing.* 2026.
+    <https://www.aisi.gov.uk/blog/incident-report-unsanctioned-agent-behaviour-during-cyber-testing>
+[3] Apart Research. *AI Incident Response Sprint*, 11–13 September 2026.
+    <https://apartresearch.com/sprints/ai-incident-response-sprint-2026-09-11-to-2026-09-13>
+[4] The Hacker News. *16-Year-Old Linux KVM Flaw Lets Guest VMs Escape to Host on Intel and AMD x86 Systems*
+    ("Januscape", CVE-2026-53359). July 2026.
+    <https://thehackernews.com/2026/07/16-year-old-linux-kvm-flaw-lets-guest.html>
+[5] SecurityWeek. *Google Offering $250,000 for Full VM Escape in New KVM Bug Bounty Program.*
+    <https://www.securityweek.com/google-offering-250000-for-full-vm-escape-in-new-kvm-bug-bounty-program/>
+[6] Trend Micro Zero Day Initiative. *CVE-2023-20869/20870: Exploiting VMware Workstation at Pwn2Own Vancouver.* 2023.
+    <https://www.thezdi.com/blog/2023/5/17/cve-2023-2086920870-exploiting-vmware-workstation-at-pwn2own-vancouver>
+[7] VMware by Broadcom. *VMware by Broadcom and Pwn2Own Vancouver 2024.* 2024.
+    <https://blogs.vmware.com/security/2024/03/vmware-by-broadcom-and-pwn2own-vancouver-2024.html>
+[8] Red Hat. *VENOM: QEMU vulnerability (CVE-2015-3456).* 2015. <https://access.redhat.com/articles/1444903>
+[9] R. Chandramouli. *Security Recommendations for Server-based Hypervisor Platforms.* NIST SP 800-125A Rev. 1, 2018.
+    <https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-125Ar1.pdf>
+[10] H. Birkholz, D. Thaler, M. Richardson, N. Smith, W. Pan. *Remote ATtestation procedureS (RATS) Architecture.*
+    RFC 9334, IETF, 2023. <https://www.rfc-editor.org/rfc/rfc9334>
+[11] I. De Oliveira Nunes, S. Jakkamsetti, N. Rattanavipanon, G. Tsudik. *On the TOCTOU Problem in Remote Attestation.*
+    ACM CCS 2021. <https://doi.org/10.1145/3460120.3484532>
+[12] B. Schlüter, S. Sridhara, A. Bertschi, S. Shinde. *Heckler: Breaking Confidential VMs with Malicious Interrupts.*
+    USENIX Security 2024. <https://arxiv.org/abs/2404.03387>
+[13] B. Schlüter, S. Sridhara, M. Kuhne, A. Bertschi, S. Shinde. *WeSee: Using Malicious #VC Interrupts to Break AMD SEV-SNP.*
+    IEEE S&P 2024. <https://arxiv.org/abs/2404.03526>
+[14] F. Schwarz et al. *00SEVen – Re-enabling Virtual Machine Forensics: Introspecting Confidential VMs Using Privileged in-VM Agents.*
+    USENIX Security 2024. <https://www.usenix.org/system/files/usenixsecurity24-schwarz.pdf>
+[15] Amazon Web Services. *Confidential computing.* <https://aws.amazon.com/confidential-computing/>
+[16] Microsoft. *Azure confidential VMs overview.*
+    <https://learn.microsoft.com/en-us/azure/confidential-computing/confidential-vm-overview>
+[17] Google Cloud. *Confidential VM overview.*
+    <https://docs.cloud.google.com/confidential-computing/confidential-vm/docs/confidential-vm-overview>
+[18] Amazon Web Services. *The Security Design of the AWS Nitro System — Passive communications design.*
+    <https://docs.aws.amazon.com/whitepapers/latest/security-design-of-aws-nitro-system/passive-communications-design.html>
+[19] UK AI Security Institute. *Inspect: an evaluation framework.* <https://inspect.aisi.org.uk/>
+[20] METR. *Common Elements of Frontier AI Safety Policies.* <https://metr.org/common-elements>
+[21] Redwood Research. *AI Control.* <https://www.redwoodresearch.org/research/ai-control>
+[22] Anthropic. *Responsible Scaling Policy.* <https://www.anthropic.com/responsible-scaling-policy>
+[23] Google DeepMind. *Strengthening our Frontier Safety Framework.*
+    <https://deepmind.google/blog/strengthening-our-frontier-safety-framework/>
+[24] NIST SP 800-53 Rev. 5, control AC-25 *Reference Monitor.* <https://csf.tools/reference/nist-sp-800-53/r5/ac/ac-25/>
+[25] J. Ganssle. *Designing Great Watchdog Timers for Embedded Systems.* <https://www.ganssle.com/watchdogs.htm>
+[26] M. Kleppmann. *How to do distributed locking.* 2016.
+    <https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html>
+[27] *Can We Stop Malicious AI? KILLBENCH: A Benchmark for External AI Kill Switch Feasibility.* arXiv:2511.13725, 2025.
+    <https://arxiv.org/abs/2511.13725>
+[28] K. Stouffer et al. *Guide to Operational Technology (OT) Security.* NIST SP 800-82 Rev. 3, 2023.
+    <https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-82r3.pdf>
+
+---
+
 ## Appendix A — Reproducibility
 
-- **Repository:** `agent-containment-dead-switch` (Rust workspace + Python harness + Terraform/shell).
-- **Phase 1 acceptance:** `tests/phase1/acceptance.sh` (A1–A5, trusted-side).
-- **Phase 2 offline validation:** `tests/phase2/offline.sh` (Rust unit tests, actuator unit tests,
-  script checks; the live A1/A2/A4 skeleton reports a distinct blocked status until the eval host is on
-  the mesh).
-- **Design docs:** `dead-switch-architecture.md`, `dead-switch-trust-boundary-research.md`,
-  `docs/phase1-local-host.md`, `docs/phase1-review-2026-09-13.md`, `docs/phase2-plan.md`.
-- **Build:** `cargo build --workspace`; cross-compile with `cargo zigbuild --release --target
-  {aarch64,x86_64}-unknown-linux-musl`.
+- **Repository:** [`twigglits/agent-containment-dead-switch`](https://github.com/twigglits/agent-containment-dead-switch)
+  (Rust workspace + Python harness + Terraform/shell).
+- **Phase 1 acceptance:** [`tests/phase1/acceptance.sh`](../tests/phase1/acceptance.sh) (A1–A5, trusted-side);
+  results and artifact digests in [`phase1-review-2026-09-13.md`](phase1-review-2026-09-13.md).
+- **Phase 2 offline validation:** [`tests/phase2/offline.sh`](../tests/phase2/offline.sh) (actuator unit
+  tests, script checks; the live A1/A2/A4 skeleton returns a distinct blocked status until the live
+  drivers exist). Linux-only: [`tests/phase2/network_ns.py`](../tests/phase2/network_ns.py).
+- **Continuous integration:** [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs
+  `rustfmt`, `clippy -D warnings`, `cargo build/test --locked`, `ruff`, the harness regression tests,
+  `shellcheck` over all infra/test scripts, and `terraform fmt/validate` on every push.
+- **Design docs:** [`dead-switch-architecture.md`](../dead-switch-architecture.md),
+  [`dead-switch-trust-boundary-research.md`](../dead-switch-trust-boundary-research.md),
+  [`phase1-local-host.md`](phase1-local-host.md), [`phase1-review-2026-09-13.md`](phase1-review-2026-09-13.md),
+  [`phase2-plan.md`](phase2-plan.md), [`README-build.md`](README-build.md),
+  [`infra/hetzner/evalhost/README.md`](../infra/hetzner/evalhost/README.md).
+- **Build:** `cargo build --workspace`; cross-compile with
+  `cargo zigbuild --release --target {aarch64,x86_64}-unknown-linux-musl`.
 
 ## Appendix B — Acknowledgments
 

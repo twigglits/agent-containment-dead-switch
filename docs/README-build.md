@@ -3,7 +3,8 @@
 This directory implements the architecture in `../dead-switch-architecture.md` (Option-A-hybrid).
 Phase 1 runs the whole loop locally on macOS; Phase 2 (`../infra/terraform/phase2`) moves the
 controller and evaluation host to Hetzner. See `phase1-local-host.md` for the full design and the
-two Codex reviews it answers.
+two Codex reviews it answers. The Phase 2 Linux eval host does not run `hostd` (macOS-only); it runs
+`crates/evalagent` — see `../infra/hetzner/evalhost/README.md` and `phase2-plan.md`.
 
 ## Components (Rust workspace, `../crates`)
 - `deadswitch-common` — wire protocol v1: signed envelope (ed25519 over sha256, type+audience

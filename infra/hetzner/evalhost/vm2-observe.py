@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 
-def vm2_config(argv, image, nested_enabled):
+def vm2_config(argv, image, nested_enabled, workload_iface='dstap0'):
     """Recognize the host-owned launch profile; unfamiliar configuration stays unobservable.
 
     A live PID alone cannot establish nesting, absence of forwarded ports, or shared mounts.
@@ -33,14 +33,19 @@ def vm2_config(argv, image, nested_enabled):
         return unknown
     if (options.get('-name') != ['deadswitch-vm2']
             or options.get('-machine') != ['q35,accel=kvm']
-            or options.get('-drive') != [f'if=virtio,format=qcow2,file={image}']):
+            or options.get('-drive') != [f'if=virtio,format=qcow2,file={image}']
+            or options.get('-serial') != [f'file:{image.parent / "vm2-serial.log"}']
+            or options.get('-display') != ['none']
+            or options.get('-pidfile') != [str(image.parent / 'vm2.pid')]
+            or len(options.get('-smp', [])) != 1
+            or len(options.get('-m', [])) != 1):
         return unknown
     networks = options.get('-netdev', [])
     devices = options.get('-device', [])
     # Only a tap can provide the VM's network. Usernet/hostfwd, config files, arbitrary devices,
-    # fsdev/virtfs and vhost-user backends all fall outside this positively observed profile.
-    tap = len(networks) == 1 and networks[0].startswith('tap,id=n0,ifname=')
-    tap = tap and networks[0].endswith(',script=no,downscript=no') and networks[0].count(',') == 4
+    # fsdev/virtfs, TCP serial/monitor/display and vhost-user backends fall outside this profile.
+    # The tap identity must match the kernel gate, not merely look like some tap device.
+    tap = networks == [f'tap,id=n0,ifname={workload_iface},script=no,downscript=no']
     known_devices = (len(devices) == 2 and 'virtio-rng-pci' in devices
                      and 'virtio-net-pci,netdev=n0,mac=52:54:00:99:00:02,romfile=' in devices)
     if not tap or not known_devices:
@@ -76,7 +81,8 @@ def observe(directory):
             result['running'] = False
             return result
         result.update(running=True, pid=pid)
-        result.update(vm2_config(argv, directory / 'vm2.qcow2', host_nested_enabled()))
+        result.update(vm2_config(argv, directory / 'vm2.qcow2', host_nested_enabled(),
+                                 os.environ.get('WORKLOAD_IFACE', 'dstap0')))
     except (FileNotFoundError, ProcessLookupError):
         result['running'] = False
     except (OSError, ValueError, UnicodeError):

@@ -27,7 +27,8 @@ endpoint, with a JSON object of at most 65,536 bytes:
 - `messages` must be a nonempty array; every message has a known role (`system`, `user`, `assistant`,
   or `tool`) and string `content`.
 - `stream` is absent or `false`; `n` is absent or integer `1`.
-- `max_tokens` is an integer in `[0, 1024]`, defaulting to `512` when absent.
+- `max_tokens` is an integer in `[1, 1024]`, defaulting to `512` when absent. Zero is refused
+  because Ollama runners can interpret `num_predict:0` as unlimited generation.
 - `tools`, `functions`, `tool_choice`, `function_call`, and `response_format` are rejected, including
   empty values. Other fields never reach the native backend: the proxy constructs fresh JSON with
   only the pinned model, sanitized messages, `stream:false`, and
@@ -131,7 +132,9 @@ seal/destroy cleanup on expiry, unhealthy/tripped verdicts, conflicts, or signed
 completion still governs how soon shell cleanup finishes, as with lease expiry.
 
 The observe hook recognizes `vm2-boot.sh`'s QEMU profile using the host's process command line and
-KVM nested parameter. Unknown configuration or unreadable fields remain null; the controller
+KVM nested parameter. It pins the workload tap, disk, file-only serial output, disabled display,
+and pidfile; TCP serial/monitor/display backends and foreign taps are unobservable. Unknown
+configuration or unreadable fields remain null; the controller
 requires positively observed `running=true`, `nested_virt=true`, `port_forwards=0`, and
 `writable_mounts=0`. Custom observe hooks must supply these fields too. Enrollment digests remain
 operator-supplied, and gate state follows successful hook transitions; these are not independent

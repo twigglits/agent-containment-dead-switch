@@ -40,8 +40,7 @@ variable "chokepoint_location" {
   type    = string
   default = "fsn1"
 }
-# Chokepoint must host the pinned inference backend (ollama). cax11's 4GB cannot hold a 7B model, so
-# size up. cax21 = 8GB (fits a ~2-3B pin comfortably, or a tight 7B-Q4); bump to cax31 (16GB) for 7B.
+# Chokepoint hosts the pre-staged, model-pinned inference backend. The validated fleet is x86_64.
 variable "chokepoint_server_type" {
   type    = string
   default = "cpx31" # x86, 8GB (cax/arm unavailable); hosts pinned inference
@@ -52,7 +51,7 @@ variable "cloud_image_id" {
   type = number
   validation {
     condition     = var.cloud_image_id > 0 && floor(var.cloud_image_id) == var.cloud_image_id
-    error_message = "Supply a positive, immutable ARM64 image/snapshot ID."
+    error_message = "Supply a positive, immutable x86_64 image/snapshot ID for the CPX fleet."
   }
 }
 
@@ -91,9 +90,8 @@ resource "hcloud_firewall" "controller" {
   # exposed on the public NIC and needs no public firewall rule. hostd reaches it at 10.20.0.1:7100.
 }
 
-# ---- Egress chokepoint: the eval host routes ALL workload egress through this; the controller DELETES
-# it to fail closed (deletion, not a rule change, is the authoritative actuator — Codex N9). The pinned
-# inference backend also sits behind it, so deletion cuts inference too (total fail-closed).
+# ---- Egress chokepoint: only the eval-host exact-action proxy connects here. The host never forwards
+# raw guest traffic. Off-host deletion removes the workload's sole mediated inference destination.
 resource "hcloud_firewall" "chokepoint" {
   name = "deadswitch-chokepoint"
   rule {

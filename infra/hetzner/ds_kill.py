@@ -116,6 +116,32 @@ def target_from_env():
     return target, int(token)
 
 
+def unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate actuator journal field")
+        result[key] = value
+    return result
+
+
+def validate_state(state, target):
+    """Corrupt but parseable JSON must never confirm deletion or clear reset uncertainty."""
+    counters = ("high_water", "clock_floor", "cloud_retry_at", "robot_retry_at")
+    flags = ("egress_cut", "reset_attempted", "reset_accepted")
+    if type(state) is not dict or set(state) != {"target", *counters, *flags}:
+        raise ValueError("invalid actuator journal schema")
+    if type(state["target"]) is not dict or state["target"] != target:
+        raise ValueError("different allocation: physical server remains quarantined")
+    # bool is an int subclass in Python; require exact types rather than truthiness/coercion.
+    if any(type(state[key]) is not int or not 0 <= state[key] <= 2**64 - 1 for key in counters):
+        raise ValueError("invalid actuator journal counter")
+    if state["high_water"] == 0 or any(type(state[key]) is not bool for key in flags):
+        raise ValueError("invalid actuator journal authority")
+    if state["reset_accepted"] and not state["reset_attempted"]:
+        raise ValueError("inconsistent actuator reset journal")
+
+
 @contextlib.contextmanager
 def journal(directory, target, token):
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -131,8 +157,11 @@ def journal(directory, target, token):
         initialized = lock.read().strip()
         if path.exists():
             private_file(path)
-            state = json.loads(path.read_text())
-            if state["target"] != target or token < state["high_water"]:
+            if path.stat().st_size > 65536:
+                raise ValueError("oversized actuator journal")
+            state = json.loads(path.read_text(), object_pairs_hook=unique_fields)
+            validate_state(state, target)
+            if token < state["high_water"]:
                 raise ValueError("stale token or different allocation: physical server remains quarantined")
         else:
             if initialized:

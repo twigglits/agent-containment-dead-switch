@@ -65,31 +65,46 @@ which are SEPARATE from the Cloud API token and are NOT in `.env`. Without them 
 qualification + two-node acceptance cannot run. The Cloud controller + chokepoint + network + code can
 proceed now on the Cloud API token.
 
-## Build status (2026-09-13): CODE-COMPLETE; live validation blocked on 2 Hetzner account actions
-Every Codex start-review must-fix has an implementation (workspace builds; `cargo test` = common 4,
-controller 1, hostd 2, supervisor 5; all three binaries cross-compile to aarch64-musl):
-- Protocol hardening: `/challenge` + `/defender` now SIGNED (common `ChallengeRequest`/`DefenderReport`;
-  hostd signs; controller verifies via `verify_hostd`). WireGuard mesh + encrypted controller↔hostd via
-  Terraform cloud-init.
-- Host-independent kill: `infra/hetzner/ds-kill.sh` (delete chokepoint = egress fail-closed; Robot hw
-  reset; both confirmed; idempotent; rate-limit aware). Wired to the working Robot user `#ws+8Mkw9sVP`.
-- Chokepoint unavoidable: `infra/hetzner/evalhost-egress.sh` (policy-routing + nft; workload egress ONLY
-  via chokepoint over WireGuard; BLACKHOLE fallback, never the public NIC; conntrack flush on seal) +
-  `infra/hetzner/chokepoint-forward.sh` (inference-only, forwarding/NAT DISABLED — deletion cuts egress
-  AND inference).
-- Physical-resource fencing: hostd incarnation now binds DS_SERVER_NUMBER + host boot_id + DS_CHOKEPOINT_ID.
-- Terraform hardened + `validate`-clean: chokepoint firewall, SSH restricted to the operator CIDR, pinned
-  provider (1.48.1) + cloudinit, WireGuard bootstrap.
-- Off-host controller deploy: `infra/hetzner/deploy-controller.sh` (binds :7100 to WireGuard only).
-- Two-node acceptance skeleton: `tests/phase2/acceptance.sh` (A1 egress-cut-by-deletion, A2 independent
-  kill, A4 fencing) — bodies activate once the eval host is on the mesh.
+## Status (2026-09-13): code-complete, live infrastructure up, A1 passed live; A2/A4 pending
 
-BLOCKED on (operator/Hetzner, external):
-- A) Hetzner CLOUD account/project cannot create servers yet — every server_type in every location
-  returns `unsupported location for server type` while the token reads fine ⇒ new-account verification
-  or a €0 project limit. Needs the operator to clear it in console.hetzner.cloud. Then `terraform apply`
-  stands up controller + chokepoint and `deploy-controller.sh` deploys the controller.
-- B) No dedicated eval host ordered yet (Robot creds verified working). Needs the operator to order one
-  (Robot → Ordering → Server Auction, ARM64 preferred) + send IPv4/server number; then WireGuard-join it,
-  run bare-metal qualification, and run the two-node acceptance — the inputs to the end-of-Phase-2 Codex
-  review.
+Every Codex start-review must-fix has an implementation. Offline validation: `cargo test --workspace`
+= 64 (common 15, controller 7, hostd 3, supervisor 5, evalagent 34); `tests/phase2/offline.sh` =
+13 actuator + 13 eval-host hook + 5 observer tests, script syntax checks, and the live skeleton's
+mandatory BLOCKED (77) status; `tests/phase2/network_ns.py` is the Linux-only netns egress-cut test.
+The whole Phase-2 fleet is x86_64 (controller/evalagent cross-built to `x86_64-unknown-linux-musl`).
+
+- Protocol hardening: `/challenge` + `/defender` SIGNED (common `ChallengeRequest`/`DefenderReport`);
+  WireGuard mesh `10.20.0.0/24`, controller bound to the WireGuard interface only.
+- Host-independent kill: `infra/hetzner/ds_kill.py` (`ds-kill.sh` wraps it). HONEST semantics after
+  the Codex end-review: chokepoint deletion is confirmed via the provider API (`INCOMPLETE` →
+  `EGRESS_CUT`); a Robot reset request / ping loss is NOT proof of termination, so `kill` reports
+  "physical termination UNCONFIRMED" and quarantines the allocation until an independent hardware
+  observer exists. Ambiguous resets are never auto-repeated; journals are fenced to the allocation.
+- Chokepoint unavoidable: `infra/hetzner/evalhost-egress.sh` (policy routing + nft; blackhole
+  fallback, never the public NIC; conntrack flush on seal) + `chokepoint-forward.sh` (inference only,
+  forwarding/NAT disabled — deletion cuts egress AND inference).
+- Linux eval host: Phase-1 `hostd` is macOS-only (Lima/pf/launchd), so the bare-metal side is the new
+  `crates/evalagent` — fail-closed lease loop on both clocks, signed challenge/evidence heartbeat,
+  embedded exact-action proxy, and operator hooks (`infra/hetzner/evalhost/`: boot, seal, destroy,
+  observe). Contract: `infra/hetzner/evalhost/README.md`. Physical-resource fencing binds
+  DS_SERVER_NUMBER + host boot_id + DS_CHOKEPOINT_ID.
+- Scope decision (Jean, 2026-09-13): focused validation — a minimal scripted VM1 inference loop plus
+  blocked canaries; Phase-1's accepted A5 (browser agent) is reused, not re-ported to x86.
+
+**Live topology (provisioned 2026-09-13; billing until destroyed):** controller = Hetzner Cloud
+`cpx11` (ash); chokepoint = Cloud `cpx31` (ash) hosting ollama `qwen2.5:3b` (DS_MODEL everywhere;
+7b does not fit); eval host = dedicated Robot auction box (i7-7700, 64 GB, NVMe, FSN1), Ubuntu 24.04,
+nested KVM. The account restriction that blocked EU Cloud locations is why the control plane is in
+`ash`. Both earlier blockers (A: Cloud account; B: no dedicated host) are cleared.
+
+**Live results:** full loop works end to end — enroll → epoch-0 lease → seal → epoch-1, signed
+evidence heartbeats keep the run Active, nested VM2→VM1 inference is mediated by the host proxy (the
+chokepoint logs the host, not the guest, as source). **A1 PASS** — `ds_kill.py cut` deleted the
+chokepoint (two-phase, API-confirmed); the eval host lost its next hop with no fallback. Operator
+record only until the end-of-phase review.
+
+**Remaining:** A2 (SIGKILL evalagent + guard leaving VM2 up, then `ds_kill.py kill`: confirm
+chokepoint gone + Robot hardware reset of the eval host), A4 (live fencing: replay, reorder, second
+incarnation, restart), then re-request the formal end-of-Phase-2 Codex verdict (the first end-review
+hardened the code but hit its usage cap before stamping APPROVE/REVISE). Recreate the chokepoint via
+`terraform apply` if a live inference path is needed again. Phase 3 starts only after that APPROVE.

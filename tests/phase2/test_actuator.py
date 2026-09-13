@@ -143,6 +143,27 @@ class JournalAndTransportTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     with kill.journal(directory, TARGET, 5): pass
 
+    def test_wrong_typed_or_inconsistent_journal_never_grants_authority(self):
+        corruptions = [
+            {'egress_cut': 'false'}, {'egress_cut': 1}, {'reset_attempted': []},
+            {'reset_accepted': 'true'}, {'high_water': True}, {'high_water': 1.5},
+            {'high_water': 0}, {'clock_floor': -1}, {'cloud_retry_at': None},
+            {'robot_retry_at': '0'}, {'reset_accepted': True, 'reset_attempted': False},
+            {'unexpected': True},
+        ]
+        for corruption in corruptions:
+            with self.subTest(corruption=corruption), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                with kill.journal(directory, TARGET, 5): pass
+                path = directory / '123.json'
+                state = json.loads(path.read_text())
+                state.update(corruption)
+                path.write_text(json.dumps(state))
+                before = path.read_bytes()
+                with self.assertRaises(ValueError):
+                    with kill.journal(directory, TARGET, 5): pass
+                self.assertEqual(path.read_bytes(), before, 'invalid journal must remain quarantined')
+
     def test_private_files_and_target_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'credential'

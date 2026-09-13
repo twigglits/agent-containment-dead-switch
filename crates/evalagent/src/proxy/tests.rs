@@ -160,6 +160,7 @@ async fn exact_wire_action_and_bounds_are_rejected_before_any_backend_connection
         ("n", json!(2)),
         ("n", json!(-1)),
         ("max_tokens", json!(-1)),
+        ("max_tokens", json!(0)),
         ("max_tokens", json!(1025)),
         ("max_tokens", json!("512")),
         ("tools", json!([])),

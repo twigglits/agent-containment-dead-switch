@@ -41,5 +41,7 @@ setsid qemu-system-x86_64 \
   -pidfile "$PIDFILE" </dev/null >/dev/null 2>&1 &
 disown 2>/dev/null || true
 sleep 1
-[ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { echo "VM2 failed to start" >&2; exit 1; }
+if [ ! -f "$PIDFILE" ] || ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  echo "VM2 failed to start" >&2; exit 1
+fi
 echo "VM2 launched pid $(cat "$PIDFILE") on tap $WORKLOAD_IFACE; proxy=$HOSTD_IP:7001; gate remains cut"

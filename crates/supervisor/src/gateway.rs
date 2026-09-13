@@ -134,7 +134,7 @@ mod tests {
                 br#"{"model":"m","messages":[{"role":"user","content":"h"}],"max_tokens":4096}"#
             )
             .unwrap_err(),
-            "max_tokens must be an integer in [0,1024]"
+            "max_tokens must be an integer in [1,1024]"
         );
         // the -1 bypass: as_u64() is None → must be rejected, not silently forwarded
         assert_eq!(
@@ -143,7 +143,7 @@ mod tests {
                 br#"{"model":"m","messages":[{"role":"user","content":"h"}],"max_tokens":-1}"#
             )
             .unwrap_err(),
-            "max_tokens must be an integer in [0,1024]"
+            "max_tokens must be an integer in [1,1024]"
         );
         assert_eq!(
             validate("m", br#"{"model":"m"}"#).unwrap_err(),

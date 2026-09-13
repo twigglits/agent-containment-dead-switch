@@ -3,4 +3,5 @@
 # No guest report supplies positive health; missing observations remain JSON null.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+source "$HERE/network-config.sh"
 exec python3 "$HERE/vm2-observe.py"

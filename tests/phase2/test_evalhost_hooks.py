@@ -44,7 +44,9 @@ elif name == 'nft':
     elif os.environ.get('TEST_NFT_FAIL'): sys.exit(1)
 elif name == 'conntrack':
     if os.environ.get('TEST_CONNTRACK_FAIL') and args[:1] == ['-L']: sys.exit(1)
-elif name in ('pgrep', 'pkill'):
+elif name == 'pgrep':
+    sys.exit(int(os.environ.get('TEST_PGREP_STATUS', '1')))
+elif name == 'pkill':
     sys.exit(1)
 elif name == 'setsid':
     pidfile = args[args.index('-pidfile') + 1]
@@ -183,6 +185,24 @@ class EvalHostHookTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('gate CUT failed', result.stderr)
         self.assertTrue(any(event['command'] == 'pkill' for event in self.trace()))
+
+    def test_destroy_does_not_signal_recycled_pid_and_refuses_unknown_death(self):
+        sleeper = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        try:
+            (self.root / 'vm2/vm2.pid').write_text(str(sleeper.pid))
+            result = self.run_hook('vm2-destroy.sh')
+            self.assertIsNone(sleeper.poll(), 'unrelated pidfile process must not be killed')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('UNCONFIRMED', result.stderr)
+            self.assertTrue((self.root / 'vm2/vm2.pid').exists())
+        finally:
+            sleeper.terminate()
+            sleeper.wait(timeout=5)
+
+    def test_destroy_cannot_treat_failed_process_observation_as_absence(self):
+        result = self.run_hook('vm2-destroy.sh', env=dict(self.env, TEST_PGREP_STATUS='2'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('process observation failed', result.stderr)
 
     def test_build_stages_exact_request_and_offline_runtime_network(self):
         result = self.run_hook('vm2-build.sh', env=dict(self.env, DS_MODEL='model:unit-test'))
