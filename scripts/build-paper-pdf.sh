@@ -109,6 +109,8 @@ hr { border: 0; border-top: 1px solid #ccc; margin: 14pt 0; }
 a { color: #0b4f9c; text-decoration: none; }
 strong { font-weight: 700; }
 .toc { display: none; }
+h2#references ~ p { text-align: left; hyphens: none; }
+h2#references ~ p a { overflow-wrap: anywhere; }
 """
 page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{html.escape(title)}</title>
 <style>{css}</style>

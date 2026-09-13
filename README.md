@@ -60,5 +60,7 @@ bash tests/phase2/offline.sh
 bash tests/phase3/offline.sh
 ```
 
+`scripts/build-paper-pdf.sh` renders the paper to `docs/dead-switch-paper.pdf` (python-markdown + headless Chrome; the Mermaid figure needs network access once).
+
 CI (`.github/workflows/ci.yml`) runs rustfmt, clippy, build/test, ruff, shellcheck and terraform validate; `security.yml` gates on Trivy.
 Tooling: Rust/crates.io, `uv`, Terraform/OpenTofu.

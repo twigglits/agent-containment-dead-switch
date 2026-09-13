@@ -715,6 +715,8 @@ outside.
   [`infra/hetzner/grader/README.md`](../infra/hetzner/grader/README.md).
 - **Build:** `cargo build --workspace`; cross-compile with
   `cargo zigbuild --release --target {aarch64,x86_64}-unknown-linux-musl`.
+- **This paper as PDF:** [`scripts/build-paper-pdf.sh`](../scripts/build-paper-pdf.sh) (Markdown → HTML →
+  headless-Chrome print; Mermaid rendered in-browser).
 
 ## Appendix B — Acknowledgments
 
