@@ -7,6 +7,7 @@
 #
 # Prereqs: python3 with the `markdown` package (pip install markdown), Google Chrome or Chromium.
 # Usage:   scripts/build-paper-pdf.sh [input.md] [output.pdf]
+#          HTML_OUT=/path/paper.html also keeps the intermediate HTML (handy for checking layout).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -123,4 +124,5 @@ PY
   --print-to-pdf="$OUT" "file://$WORK/paper.html" >/dev/null 2>&1
 
 [ -s "$OUT" ] || { echo "build-paper-pdf: Chrome produced no output" >&2; exit 1; }
+[ -n "${HTML_OUT:-}" ] && cp "$WORK/paper.html" "$HTML_OUT"
 echo "wrote $OUT ($(du -h "$OUT" | cut -f1))"
