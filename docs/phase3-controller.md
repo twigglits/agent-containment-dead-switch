@@ -108,6 +108,15 @@ the eval process is gone. Grading requires a terminal epoch >= 1 run, this trust
 confirmation, a matching incarnation and an already captured submission. No operator endpoint can
 substitute an unverified guest assertion for stop confirmation.
 
+The Phase 2 evalagent now bridges its existing shutdown to `/terminated`: it first revokes local
+authority and runs the existing seal/destroy hooks; only a successful destroy is followed by a
+separate host observation. That observation is limited to two seconds and 4096 bytes and must report
+`running:false` without a contradictory live PID. It then signs the existing termination message
+with its already loaded hostd key and sends once to the configured controller origin, with redirects,
+proxies and retries disabled and a three-second HTTP deadline. Missing/failed/unknown observations,
+failed destruction or failed notification leave grading blocked. Every path remains stopped and
+exits nonzero; this bridge cannot renew or resume the eval lease.
+
 Then the operator calls on `127.0.0.1:7101`:
 
 ```http

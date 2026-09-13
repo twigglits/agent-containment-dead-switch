@@ -36,12 +36,16 @@ fn stop_observer(child: &mut Child) {
     // The shell is a process-group leader. It is not reaped until stdout has closed, so its PID
     // cannot be recycled before this negative-PGID signal. Kill children holding the output pipe.
     if let Ok(pid) = i32::try_from(child.id()) {
-        unsafe { libc::kill(-pid, libc::SIGKILL); }
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
     }
     let _ = child.kill();
     let deadline = Instant::now() + Duration::from_millis(250);
     while Instant::now() < deadline {
-        if matches!(child.try_wait(), Ok(Some(_))) { return; }
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
         std::thread::sleep(Duration::from_millis(5));
     }
     // An unobservable/stuck observer is never evidence of teardown. Its kill has been requested;
@@ -52,12 +56,17 @@ fn stop_observer(child: &mut Child) {
 /// after destruction. The existing health-observation and shutdown hooks remain unchanged.
 fn observe_stopped(a: &RunArgs) -> anyhow::Result<()> {
     let mut child = hook_command(a, &a.observe_cmd)
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
-        .process_group(0).spawn().context("teardown observe spawn")?;
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .context("teardown observe spawn")?;
     let mut stdout = child.stdout.take().expect("piped observer stdout");
     let descriptor = stdout.as_raw_fd();
     let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
-    if flags < 0 || unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+    if flags < 0 || unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+    {
         stop_observer(&mut child);
         anyhow::bail!("cannot bound teardown observation");
     }
@@ -86,9 +95,12 @@ fn observe_stopped(a: &RunArgs) -> anyhow::Result<()> {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     ensure!(status.success(), "teardown observation failed");
-                    let observed: ObserveOut = serde_json::from_slice(&bytes).context("teardown observation invalid")?;
-                    ensure!(observed.running == Some(false) && observed.pid.is_none(),
-                        "teardown not independently confirmed");
+                    let observed: ObserveOut =
+                        serde_json::from_slice(&bytes).context("teardown observation invalid")?;
+                    ensure!(
+                        observed.running == Some(false) && observed.pid.is_none(),
+                        "teardown not independently confirmed"
+                    );
                     return Ok(());
                 }
                 Ok(None) => {}
@@ -106,25 +118,53 @@ fn observe_stopped(a: &RunArgs) -> anyhow::Result<()> {
     }
 }
 
-pub(super) fn notify_after_destroy(a: &RunArgs, key: &SigningKey, started: Instant) -> anyhow::Result<()> {
+pub(super) fn notify_after_destroy(
+    a: &RunArgs,
+    key: &SigningKey,
+    started: Instant,
+) -> anyhow::Result<()> {
     observe_stopped(a)?;
     let mut endpoint = reqwest::Url::parse(&a.controller_url).context("controller URL")?;
-    ensure!(matches!(endpoint.scheme(), "http" | "https") && endpoint.host().is_some()
-        && endpoint.username().is_empty() && endpoint.password().is_none()
-        && endpoint.query().is_none() && endpoint.fragment().is_none()
-        && endpoint.path() == "/", "controller URL must be a bare trusted origin");
+    ensure!(
+        matches!(endpoint.scheme(), "http" | "https")
+            && endpoint.host().is_some()
+            && endpoint.username().is_empty()
+            && endpoint.password().is_none()
+            && endpoint.query().is_none()
+            && endpoint.fragment().is_none()
+            && endpoint.path() == "/",
+        "controller URL must be a bare trusted origin"
+    );
     // Preserve the configured controller scheme/host/port; no callback URL or second authority.
     endpoint.set_path("/terminated");
-    let client = reqwest::blocking::Client::builder().no_proxy()
-        .redirect(reqwest::redirect::Policy::none()).retry(reqwest::retry::never())
-        .http1_only().pool_max_idle_per_host(0)
-        .connect_timeout(Duration::from_secs(2)).timeout(NOTIFY_TIMEOUT).build()?;
-    let message = Terminated { v: PROTO_V, kind: "terminated".into(), run_id: a.run_id.clone(),
-        aud: AUD_CONTROLLER.into(), incarnation: a.incarnation.clone(), issued_at: now_unix(),
-        latency_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX) };
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .http1_only()
+        .pool_max_idle_per_host(0)
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(NOTIFY_TIMEOUT)
+        .build()?;
+    let message = Terminated {
+        v: PROTO_V,
+        kind: "terminated".into(),
+        run_id: a.run_id.clone(),
+        aud: AUD_CONTROLLER.into(),
+        incarnation: a.incarnation.clone(),
+        issued_at: now_unix(),
+        latency_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+    };
     let signed = Signed::sign(key, "hostd", &message);
-    let response = client.post(endpoint).json(&signed).send().context("termination notification")?;
-    ensure!(response.status().is_success(), "controller refused termination notification");
+    let response = client
+        .post(endpoint)
+        .json(&signed)
+        .send()
+        .context("termination notification")?;
+    ensure!(
+        response.status().is_success(),
+        "controller refused termination notification"
+    );
     // The body is irrelevant, never parsed or relayed to the workload. Failure never restores
     // authority, and a missed notification leaves operator grading authorization unavailable.
     Ok(())

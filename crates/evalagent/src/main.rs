@@ -295,7 +295,12 @@ extern "C" {
 /// The dead-switch itself: absence of a fresh lease => death. Seal first (best-effort, logged) so
 /// egress is blackholed even if the destroy step below fails; both steps run regardless of the
 /// other's outcome, then the process exits non-zero.
-fn fail_closed(a: &RunArgs, authority: &Authority, key: &SigningKey, reason: &str) -> anyhow::Error {
+fn fail_closed(
+    a: &RunArgs,
+    authority: &Authority,
+    key: &SigningKey,
+    reason: &str,
+) -> anyhow::Error {
     let started = Instant::now();
     // Revoke in-process authority BEFORE either shell hook. A failed/hanging hook cannot keep
     // dispatch alive, nor deliver backend content from an already-running inference.
@@ -330,7 +335,12 @@ struct RunGuard<'a> {
 impl Drop for RunGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
-            let _ = fail_closed(self.args, &self.authority, self.key, "run exited before cleanup");
+            let _ = fail_closed(
+                self.args,
+                &self.authority,
+                self.key,
+                "run exited before cleanup",
+            );
         }
     }
 }

@@ -236,6 +236,58 @@ class GraderHookTests(unittest.TestCase):
                 launcher.destroy_all(self.config)
         self.assertEqual(attempted, ["a" * 32, "b" * 32])
 
+    def test_retirement_is_durable_before_stop_and_blocks_delayed_supervisor(self):
+        sid = self.job["sandbox_id"]
+        events = []
+
+        def stop(config, identity):
+            self.assertEqual(identity, sid)
+            self.assertEqual(launcher.retired_path(config, identity).read_bytes(), b"retired\n")
+            events.append("stop_after_retirement")
+
+        with mock.patch.object(launcher, "processes_gone", side_effect=stop):
+            result = launcher.destroy(self.config, sid)
+        self.assertTrue(result["processes_gone"])
+        self.assertEqual(events, ["stop_after_retirement"])
+        with mock.patch.object(launcher, "read_state", return_value=dict(job=self.job, phase="claimed", observation=None)), \
+                mock.patch.object(launcher.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(ValueError, "delayed launch rejected"):
+                launcher.supervise(self.config, sid)
+            self.assertFalse(popen.called)
+        with self.assertRaisesRegex(ValueError, "delayed launch rejected"):
+            launcher.launch(self.config, self.job)
+
+    def test_retirement_during_supervisor_intake_is_rechecked_before_qemu(self):
+        sid = self.job["sandbox_id"]
+
+        def read_state(config, identity):
+            launcher.retire(config, identity)
+            return dict(job=self.job, phase="claimed", observation=None)
+
+        with mock.patch.object(launcher, "read_state", side_effect=read_state), \
+                mock.patch.object(launcher.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(ValueError, "delayed launch rejected"):
+                launcher.supervise(self.config, sid)
+            self.assertFalse(popen.called)
+
+    def test_retirement_storage_failure_still_stops_but_cannot_confirm(self):
+        with mock.patch.object(launcher, "retire", side_effect=OSError("mock full disk")), \
+                mock.patch.object(launcher, "processes_gone") as stop:
+            with self.assertRaisesRegex(ValueError, "retirement barrier unavailable"):
+                launcher.destroy(self.config, self.job["sandbox_id"])
+            stop.assert_called_once_with(self.config, self.job["sandbox_id"])
+
+    def test_archived_cleanup_restores_retirement_without_per_record_systemctl(self):
+        sid = self.job["sandbox_id"]
+        launcher.state_path(self.config, sid).touch()
+        state = dict(job=self.job, phase="destroyed", observation=None)
+        with mock.patch.object(launcher, "command", return_value=types.SimpleNamespace(stdout=b"")) as command, \
+                mock.patch.object(launcher, "read_state", return_value=state):
+            result = launcher.destroy_all(self.config)
+        self.assertTrue(result["processes_gone"] and result["storage_gone"])
+        self.assertEqual(command.call_count, 1)
+        self.assertTrue(launcher.retired_path(self.config, sid).exists())
+
     def test_unsafe_identifiers_paths_and_guest_forged_observations_rejected(self):
         for sid in ("../other", "A" * 32, "", "a" * 31):
             with self.assertRaises(ValueError):

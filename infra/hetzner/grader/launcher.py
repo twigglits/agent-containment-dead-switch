@@ -434,7 +434,13 @@ def processes_gone(config, sandbox_id):
 
 
 def destroy(config, sandbox_id):
-    retire(config, sandbox_id)
+    retirement_failed = False
+    try:
+        retire(config, sandbox_id)
+    except (OSError, ValueError):
+        # Disk/journal failure must not suppress the independent best-effort stop. Missing
+        # retirement evidence still prevents a successful teardown acknowledgement below.
+        retirement_failed = True
     processes_gone(config, sandbox_id)
     work = config["sandbox_root"] / sandbox_id
     if work.exists() or work.is_symlink():
@@ -452,6 +458,8 @@ def destroy(config, sandbox_id):
         state = read_state(config, sandbox_id)
         state["phase"] = "destroyed"
         atomic_json(path, state)
+    if retirement_failed:
+        raise ValueError("retirement barrier unavailable: quarantine")
     return dict(sandbox_id=sandbox_id, processes_gone=True, storage_gone=True, teardown_confirmed_at=int(time.time()))
 
 

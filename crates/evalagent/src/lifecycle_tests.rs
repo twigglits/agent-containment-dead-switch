@@ -341,3 +341,205 @@ fn conflicting_or_non_unicast_bind_addresses_are_rejected() {
         assert!(resolve_address(Some(ip), None, host).is_err());
     }
 }
+
+/// Local capture for the existing /terminated protocol. Never opens a mesh or public connection.
+fn termination_response(status: &str) -> (String, std::thread::JoinHandle<Signed>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let status = status.to_string();
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut header = Vec::new();
+        loop {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+            assert!(header.len() <= 4096);
+            if header.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let header = String::from_utf8(header).unwrap();
+        assert!(header.starts_with("POST /terminated HTTP/1.1\r\n"));
+        let size: usize = header
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse().unwrap())
+            })
+            .unwrap();
+        assert!(size <= 4096);
+        let mut bytes = vec![0; size];
+        stream.read_exact(&mut bytes).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    });
+    (format!("http://{addr}"), handle)
+}
+
+#[test]
+fn successful_destroy_and_independent_observation_notify_with_existing_host_key() {
+    let dir = TempDir::new();
+    let mut a = args(&dir);
+    let events = dir.0.join("events");
+    // Seal failure still cannot skip destruction; the deployed destroy hook independently cuts too.
+    a.seal_cmd = format!("printf 'seal\\n' >> {}; exit 1", shell_quote(&events));
+    a.destroy_cmd = format!("printf 'destroy\\n' >> {}", shell_quote(&events));
+    a.observe_cmd = format!(
+        "printf 'observe\\n' >> {}; printf '{{\"running\":false,\"pid\":null}}'",
+        shell_quote(&events)
+    );
+    let (url, server) = termination_response("200 OK");
+    a.controller_url = url;
+    let key = SigningKey::from_bytes(&[19; 32]);
+    let authority = Authority::new(&NO_SIGNAL);
+    let _ = fail_closed(&a, &authority, &key, "test teardown");
+    let envelope = server.join().unwrap();
+    let message: termination::Terminated = envelope
+        .verify(&key.verifying_key(), "terminated", AUD_CONTROLLER)
+        .unwrap();
+    assert_eq!(message.run_id, a.run_id);
+    assert_eq!(message.incarnation, a.incarnation);
+    assert!(now_unix().abs_diff(message.issued_at) <= CLOCK_SKEW_S);
+    assert!(message.latency_ms < 5000);
+    assert_eq!(
+        std::fs::read_to_string(events).unwrap(),
+        "seal\ndestroy\nobserve\n"
+    );
+    assert!(authority.stop_reason().is_some());
+    assert!(authority
+        .accept(Deadline::accept(&grant(1), 0, now_unix()).unwrap())
+        .is_err());
+    assert!(
+        !a.key_file.exists(),
+        "cleanup reuses the loaded signer and cannot generate credentials"
+    );
+}
+
+#[test]
+fn failed_destroy_or_absent_failed_running_or_contradictory_observation_never_notifies() {
+    for case in [
+        "destroy",
+        "missing",
+        "unknown",
+        "failed",
+        "running",
+        "contradictory",
+        "invalid",
+        "oversize",
+    ] {
+        let dir = TempDir::new();
+        let mut a = args(&dir);
+        let events = dir.0.join("events");
+        a.seal_cmd = format!("printf 'seal\\n' >> {}", shell_quote(&events));
+        a.destroy_cmd = format!(
+            "printf 'destroy\\n' >> {}{}",
+            shell_quote(&events),
+            if case == "destroy" { "; exit 1" } else { "" }
+        );
+        let observe = match case {
+            "missing" => "true",
+            "unknown" => "printf '{\"running\":null}'",
+            "failed" => "printf '{\"running\":false}'; exit 1",
+            "running" => "printf '{\"running\":true}'",
+            "contradictory" => "printf '{\"running\":false,\"pid\":7}'",
+            "invalid" => "printf not-json",
+            "oversize" => "head -c 4097 /dev/zero",
+            _ => "printf '{\"running\":false}'",
+        };
+        a.observe_cmd = format!("printf 'observe\\n' >> {}; {observe}", shell_quote(&events));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        a.controller_url = format!("http://{}", listener.local_addr().unwrap());
+        let authority = Authority::new(&NO_SIGNAL);
+        let key = SigningKey::from_bytes(&[19; 32]);
+        let _ = fail_closed(&a, &authority, &key, "test uncertain teardown");
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "{case}"
+        );
+        assert!(authority.stop_reason().is_some());
+        assert_eq!(
+            std::fs::read_to_string(events).unwrap(),
+            if case == "destroy" {
+                "seal\ndestroy\n"
+            } else {
+                "seal\ndestroy\nobserve\n"
+            },
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn hanging_observation_is_bounded_and_does_not_skip_destroy_or_notify() {
+    let dir = TempDir::new();
+    let mut a = args(&dir);
+    let destroyed = dir.0.join("destroyed");
+    a.destroy_cmd = format!("touch {}", shell_quote(&destroyed));
+    a.observe_cmd = "sleep 30".into();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    a.controller_url = format!("http://{}", listener.local_addr().unwrap());
+    let authority = Authority::new(&NO_SIGNAL);
+    let start = Instant::now();
+    let _ = fail_closed(
+        &a,
+        &authority,
+        &SigningKey::from_bytes(&[19; 32]),
+        "test observer hang",
+    );
+    assert!(start.elapsed() < Duration::from_secs(4));
+    assert!(destroyed.exists());
+    assert!(authority.stop_reason().is_some());
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn notification_errors_and_timeout_leave_the_run_destroyed_and_authority_revoked() {
+    let dir = TempDir::new();
+    let mut a = args(&dir);
+    let destroyed = dir.0.join("destroyed");
+    a.destroy_cmd = format!("touch {}", shell_quote(&destroyed));
+    a.observe_cmd = "printf '{\"running\":false}'".into();
+    let (url, server) = termination_response("500 Internal Server Error");
+    a.controller_url = url;
+    let key = SigningKey::from_bytes(&[19; 32]);
+    let authority = Authority::new(&NO_SIGNAL);
+    assert!(fail_closed(&a, &authority, &key, "test notify failure")
+        .to_string()
+        .contains("fail closed"));
+    server.join().unwrap();
+    assert!(destroyed.exists());
+    assert!(authority.stop_reason().is_some());
+
+    // Hold a local TCP connection open without an HTTP response; notification has a hard timeout.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    a.controller_url = format!("http://{}", listener.local_addr().unwrap());
+    let (release, wait) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (_stream, _) = listener.accept().unwrap();
+        let _ = wait.recv_timeout(Duration::from_secs(5));
+    });
+    let started = Instant::now();
+    let _ = fail_closed(&a, &authority, &key, "test notify timeout");
+    release.send(()).unwrap();
+    server.join().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(destroyed.exists());
+    assert!(authority
+        .accept(Deadline::accept(&grant(1), 0, now_unix()).unwrap())
+        .is_err());
+}
