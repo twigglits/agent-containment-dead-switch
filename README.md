@@ -20,20 +20,23 @@ Face evaluation-security incident, whose report is transcribed in
 | [`dead-switch-architecture.md`](dead-switch-architecture.md) | Design decision record + diagrams (`.mmd`/`.png`) |
 | [`dead-switch-trust-boundary-research.md`](dead-switch-trust-boundary-research.md) | Research brief behind the Option-A-hybrid trust boundary |
 | [`docs/phase1-local-host.md`](docs/phase1-local-host.md), [`docs/README-build.md`](docs/README-build.md), [`docs/phase1-review-2026-09-13.md`](docs/phase1-review-2026-09-13.md) | Phase 1 (local macOS host, Lima VM2, nested QEMU/KVM VM1): design, build, accepted results |
-| [`docs/phase2-plan.md`](docs/phase2-plan.md), [`infra/hetzner/evalhost/README.md`](infra/hetzner/evalhost/README.md) | Phase 2 (off-host Hetzner controller + deletable chokepoint + bare-metal eval host): plan, status, contracts |
-| [`crates/`](crates) | Rust workspace: `common`, `controller`, `hostd` (macOS host), `supervisor` (VM2), `evalagent` (Linux host) |
+| [`docs/phase2-plan.md`](docs/phase2-plan.md), [`docs/phase2-review-2026-09-13.md`](docs/phase2-review-2026-09-13.md), [`infra/hetzner/evalhost/README.md`](infra/hetzner/evalhost/README.md) | Phase 2 (off-host Hetzner controller + deletable chokepoint + bare-metal eval host): plan, review verdict, contracts |
+| [`docs/phase3-plan.md`](docs/phase3-plan.md), [`docs/phase3-build.md`](docs/phase3-build.md), [`docs/phase3-controller.md`](docs/phase3-controller.md), [`docs/phase3-grader.md`](docs/phase3-grader.md), [`infra/hetzner/grader/README.md`](infra/hetzner/grader/README.md) | Phase 3 (isolated-grading airlock: upload broker, TCG sandbox grader, scorer-signed results, grader-node kill): plan, wire/hook/deployment contracts |
+| [`crates/`](crates) | Rust workspace: `common`, `controller`, `hostd` (macOS host), `supervisor` (VM2), `evalagent` (Linux host), `grader` (airlock node) |
 | [`harness/`](harness) | Python VM1 agent harness + regression tests |
 | [`infra/`](infra) | Lima/pf (Mac), QEMU VM1 image, Hetzner scripts, Terraform (Cloud pieces only) |
-| [`tests/`](tests) | Phase 1 trusted-side acceptance; Phase 2 offline + live skeleton |
+| [`tests/`](tests) | Phase 1 trusted-side acceptance; Phase 2 and Phase 3 offline suites + BLOCKED live skeletons |
 | [`assets/dead-switch.svg`](assets/dead-switch.svg) | Self-animating (CSS-only) walkthrough of the containment ladder — agent AI in VM1, defender AI with pipe + boundary monitors in VM2 — embedded above |
 | [`JEAN_SUGGESTIONS.md`](JEAN_SUGGESTIONS.md) | Original safeguard ideas that seeded the design (package pre-staging, isolated grading) |
 
 ## Status (2026-09-13)
 
 - Phase 1: complete, independently reviewed (APPROVE), acceptance 5/5.
-- Phase 2: code-complete; live A1 (egress cut by chokepoint deletion) passed; A2/A4 and the formal
-  end-of-phase review pending.
-- Phase 3 (isolated-grading airlock): designed, not built.
+- Phase 2: live A1 (egress cut by chokepoint deletion), A2 (host-independent hardware reset with
+  the host agent and guard killed) and A4 (fencing) passed on the three-node Hetzner fleet;
+  end-of-phase review: APPROVE-PHASE-2 (`docs/phase2-review-2026-09-13.md`).
+- Phase 3 (isolated-grading airlock): built and validated offline (119 Rust + 62 Python tests);
+  grader node not yet deployed, so live G1–G5 are BLOCKED and the end-of-phase review has not run.
 
 ## Roadmap
 
@@ -44,7 +47,8 @@ Face evaluation-security incident, whose report is transcribed in
   **VM1↔VM2 boundary** (QMP, tap, virtio, scoped VMI), so an attempt by the VM1 agent to break out of
   its sandbox VM is detected at the boundary and VM1 is killed and destroyed. Authority stays closed:
   kill VM1, request a trip, nothing wider.
-- Phase 2 live A2/A4 and the formal end-of-phase review; then Phase 3.
+- Deploy the reviewed Phase 2 binaries, commission the grader node, run live G1–G5, end-of-Phase-3 review.
+- Automatic off-host actuation on controller-side lease expiry (today the physical actuator is operator-invoked).
 - Independent hardware observer so a hardware reset can be confirmed rather than quarantined.
 
 ## Build and test
@@ -53,7 +57,8 @@ Face evaluation-security incident, whose report is transcribed in
 cargo build --workspace && cargo test --workspace
 python3 harness/deadswitch_harness/test_classify.py && python3 harness/deadswitch_harness/test_runtime.py
 bash tests/phase2/offline.sh
+bash tests/phase3/offline.sh
 ```
 
-CI (`.github/workflows/ci.yml`) runs rustfmt, clippy, build/test, ruff, shellcheck and terraform validate.
+CI (`.github/workflows/ci.yml`) runs rustfmt, clippy, build/test, ruff, shellcheck and terraform validate; `security.yml` gates on Trivy.
 Tooling per [`AGENTS.md`](AGENTS.md): Rust/crates.io, `uv`, Terraform/OpenTofu.

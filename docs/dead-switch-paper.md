@@ -32,12 +32,15 @@ to a capability-gated upgrade path.
 We describe a three-phase implementation — a local single-machine profile, an off-host controller on
 separate cloud and bare-metal nodes, and an external isolated-grading "airlock" — and report the
 Phase 1 acceptance results (five trusted-side tests, host-independent kill measured at 3.2–4.2 s
-against a 25 s bound), the Phase 2 offline validation, and the first live Phase 2 result on real
-two-node infrastructure: egress cut by deleting the external chokepoint, with no fallback route. We
-are deliberate about what the architecture does *not* claim: it does not survive hypervisor
-compromise, its runtime introspection is scoped, and — a correctness point surfaced during
-adversarial review — **hardware-reset acceptance is not proof of physical termination**, so the
-actuator quarantines rather than declaring a success it cannot verify.
+against a 25 s bound), the Phase 2 live results on real three-node infrastructure (egress cut by
+deleting the external chokepoint with no fallback route, a host-independent hardware reset with the
+host agent and its guard already killed, and cross-node fencing; independently reviewed and
+approved), and the Phase 3 grading airlock, which is built and validated offline but not yet
+deployed. We are deliberate about what the architecture does *not* claim: it does not survive
+hypervisor compromise, its runtime introspection is scoped, the physical actuator is operator-invoked
+rather than automatic, and — a correctness point surfaced during adversarial review —
+**hardware-reset acceptance is not proof of physical termination**, so the actuator quarantines
+rather than declaring a success it cannot verify.
 
 ---
 
@@ -311,22 +314,57 @@ overlay delete), within the same bounded authority: the defender may kill VM1 an
 the controller trip the run, but it still cannot widen its own scope, and VM2's own fate remains in
 the off-host controller's hands.
 
+### 4.6 The grading airlock (Phase 3)
+
+Grading is the fourth attack surface the incident exposed: an agent that cannot read the answer key
+can still exploit the scorer, mine feedback as an oracle, or forge what gets graded. The airlock
+(plan: [`phase3-plan.md`](phase3-plan.md); contracts: [`phase3-build.md`](phase3-build.md),
+[`phase3-controller.md`](phase3-controller.md), [`phase3-grader.md`](phase3-grader.md)) is designed
+so that neither the answer key nor any grading-dependent signal can flow back toward the agent:
+
+- **A trusted upload broker on the controller terminates the agent's connection.** It stores at most
+  64 KiB of raw bytes under a recomputed SHA-256 digest and answers every request — accepted,
+  duplicate, oversized, unknown route, exhausted budget — with the same opaque `202 {"status":
+  "received"}`. The receipt carries no admission, queue, or grading information.
+- **Dispatch only after the run has stopped.** Grading requires the submitting run to be terminal
+  *and* the host agent to have sent a signed stop confirmation after an independently observed
+  destruction, so no live agent exists to receive an oracle signal.
+- **The sandbox holds no key and no network.** The grader launches one fresh QEMU TCG guest per job
+  (no NIC, a disposable overlay over an immutable base, bounded memory, CPUs and wall clock) under a
+  dedicated unprivileged uid in its own systemd cgroup. The trusted scorer never imports or executes
+  submitted code; it compares the captured candidate bytes with a root-only expected output. A
+  guest-written "PASS" is just an incorrect answer.
+- **Freeze, then confirm teardown, then publish.** Observations are frozen and process-plus-storage
+  destruction is positively confirmed before the scorer signs the result; an uncertain teardown
+  quarantines the whole grader.
+- **Results are scorer-signed, bounded, typed, and operator-only.** The result vocabulary is
+  `correct`/`incorrect` and `completed`; there is no free text, guest report, or candidate output.
+  A finite lifetime grading budget is spent durably before dispatch, and the MVP policy is **zero
+  grading-dependent feedback to any agent**. The grader's only WireGuard peer is the controller, on
+  two fixed ports, with nftables as a backstop rather than the enforcement boundary.
+- **The grader has its own off-host kill.** A separate actuator deletes the grader Cloud node with the
+  same two-phase confirmation and quarantine-on-uncertainty semantics as the chokepoint deletion; the
+  grader itself holds no cloud credentials.
+
 ---
 
 ## 5. Implementation
 
-The system is a small Rust workspace plus a Python harness and Terraform/shell infrastructure — about
-12,400 lines in total (Rust 9,390; Python 1,542; shell 1,302; Terraform 170, counted 2026-09-13).
+The system is a Rust workspace plus a Python harness and Terraform/shell infrastructure — about
+19,900 lines in total (Rust 15,395; Python 2,853; shell 1,528; Terraform 168, counted 2026-09-13).
 The Linux-side binaries are cross-compiled to static `musl` targets (aarch64 for the Phase 1 VM2,
-x86_64 for the Phase 2 fleet); the macOS host daemon is built natively.
+x86_64 for the Phase 2 and 3 fleet); the macOS host daemon is built natively. Continuous integration
+runs the full lint/build/test matrix plus a Trivy vulnerability, secret and IaC-misconfiguration gate
+on every push.
 
 | Crate | Lines (Rust) | Role |
 |---|---|---|
-| [`common`](../crates/common) | 1,095 | Wire protocol, `Deadline`/lease, ed25519 signed envelopes, `ChallengeRequest`/`DefenderReport`, shared exact-action inference contract |
-| [`controller`](../crates/controller) | 1,383 | Off-host: leases, heartbeat verification, defender policy, actuator |
+| [`common`](../crates/common) | 1,742 | Wire protocol, `Deadline`/lease, ed25519 signed envelopes, `ChallengeRequest`/`DefenderReport`, shared exact-action inference contract, signed `GradingJob`/`GradingResult` schemas |
+| [`controller`](../crates/controller) | 4,024 | Off-host: leases, heartbeat verification, defender policy, actuator hand-off; Phase 3 upload broker, durable grading authorization and budget, scorer-append result store |
 | [`hostd`](../crates/hostd) | 2,230 | Trusted macOS host daemon (Phase 1): `pf` egress gate, lease watchdog, VM2 lifecycle, evidence store, inference chokepoint |
 | [`supervisor`](../crates/supervisor) | 1,681 | Runs in VM2: boots nested VM1, exact-action gateway, defender, heartbeat |
-| [`evalagent`](../crates/evalagent) | 3,001 | Trusted Linux host agent (Phase 2): fail-closed lease loop, signed challenge/evidence heartbeat, embedded exact-action proxy, operator-supplied boot/seal/destroy/observe hooks |
+| [`evalagent`](../crates/evalagent) | 3,398 | Trusted Linux host agent (Phase 2): fail-closed lease loop, signed challenge/evidence heartbeat, embedded exact-action proxy, operator-supplied boot/seal/destroy/observe hooks, signed stop confirmation after observed destruction |
+| [`grader`](../crates/grader) | 2,320 | Phase 3 scorer/coordinator on the airlock node: fail-closed grading lease, disposable TCG sandbox lifecycle via hooks, exact-bytes scoring, freeze-then-teardown-then-publish, private durable ledger |
 
 Key implementation choices:
 
@@ -361,12 +399,15 @@ Key implementation choices:
   below a nested VM2→VM1 workload. The three nodes form a WireGuard mesh. The host-independent kill =
   **delete the chokepoint (egress fails closed) + issue a Robot hardware reset**, driven from the
   off-host controller. Plan and status: [`phase2-plan.md`](phase2-plan.md).
-  *Status: code-complete and hardened; live infrastructure provisioned 2026-09-13; live A1 passed;
-  A2 and A4 pending (§6.2).*
-- **Phase 3 — external grading airlock.** A network-isolated grader receives bounded submissions,
-  executes them in a disposable sandbox that holds no key or credentials, and releases scores under a
-  bounded feedback policy to a trusted results store. *Status: designed (§4, §6 and
-  [`dead-switch-grading.mmd`](../dead-switch-grading.mmd)); build gated behind the Phase 2 review.*
+  *Status: live A1, A2 and A4 passed on the provisioned three-node fleet on 2026-09-13, and the
+  end-of-phase adversarial review returned **APPROVE-PHASE-2**
+  ([`phase2-review-2026-09-13.md`](phase2-review-2026-09-13.md)); see §6.2.*
+- **Phase 3 — external grading airlock.** A network-isolated grader node (`10.20.0.4` on the same
+  WireGuard mesh) receives controller-signed jobs, executes each submission in a disposable QEMU TCG
+  sandbox that holds no key, credentials or network, and returns scorer-signed, bounded results to a
+  controller-private store (§4.6; diagram [`dead-switch-grading.mmd`](../dead-switch-grading.mmd)).
+  *Status: built and validated offline against a tiny public fixture; the grader node is not yet
+  deployed, so the live G1–G5 acceptance is blocked and the end-of-phase review has not run (§6.3).*
 
 ---
 
@@ -402,31 +443,46 @@ work simply by breaking the workload. The agent completed a legitimate task usin
 mediated inference path, its single external navigation was correctly blocked and classified, and the
 run produced a valid completion with no error/transport artifacts.
 
-### 6.2 Phase 2 — offline validation, first live result, and an honesty correction
+### 6.2 Phase 2 — live A1/A2/A4 on real hardware, reviewed and approved
 
-Phase 2's live two-node acceptance (A1 egress-cut-by-deletion, A2 host-independent kill with the host
-agent and its guard disabled, A4 cross-node fencing) is the closeout gate. Ahead of it, the code is
-validated **offline**: the Rust workspace builds clean and passes 64 unit tests (common 15, controller
-7, hostd 3, supervisor 5, evalagent 34 — covering lease/fencing, replay, clock skew, gate transitions
-and proxy validation); a 13-case actuator suite, 13 eval-host hook tests and 5 observer tests exercise
-the kill and egress logic without any cloud, and a Linux network-namespace test drives the real
-nftables egress cut. The offline runner ([`tests/phase2/offline.sh`](../tests/phase2/offline.sh))
-deliberately refuses to let the live skeleton report success — an un-implemented live gate returns a
-distinct "blocked" status so it can never silently pass CI.
+Phase 2's scope was fixed by the operator as a *focused* validation: prove A1 (egress cut by
+deletion), A2 (host-independent kill with the host agent and its guard disabled) and A4 (cross-node
+fencing) with a real nested VM2→VM1 workload egressing only through the deletable chokepoint, and
+reuse Phase 1's accepted A5 positive control rather than re-port the browser stack to x86. Ahead of
+the live run the code was validated offline: the Rust workspace built clean and passed its unit
+tests, the actuator, eval-host hook and observer suites exercised the kill and egress logic without
+any cloud, and a Linux network-namespace test drove the real nftables egress cut. The offline runner
+([`tests/phase2/offline.sh`](../tests/phase2/offline.sh)) refuses to let the live skeleton report
+success — an un-implemented live gate returns a distinct blocked status so it can never silently
+pass CI.
 
-**First live result (2026-09-13, operator-recorded).** With the real three-node topology stood up —
-controller and chokepoint on Hetzner Cloud, the dedicated bare-metal eval host in FSN1 — the full
-loop ran end to end: enroll → epoch-0 prestage lease → seal → epoch-1 evaluation lease, with signed
-challenge/evidence heartbeats keeping the run *Active* and the controller logging accepted healthy
-evidence. The nested VM2→VM1 workload issued exact-action inference through the host proxy, and the
-chokepoint's backend logged those requests as sourced from the **host**, not the guest — mediation
-proven. **A1 passed:** the actuator ([`infra/hetzner/ds_kill.py`](../infra/hetzner/ds_kill.py))
-deleted the chokepoint from the controller in two phases (`INCOMPLETE` until the provider API
-confirmed the server gone, then `EGRESS_CUT`); the eval host then had no route to the former next hop
-and no fallback path. A2 (hardware reset with the host agent and guard killed) and A4 (live fencing
-and replay across a second incarnation) remain to be run, after which the formal end-of-phase review
-will be re-requested. Until that review lands, the live result is an operator record, not an
-independently reviewed claim.
+**Live results (2026-09-13, operator record).** With the three-node fleet stood up — controller and
+chokepoint on Hetzner Cloud, the dedicated bare-metal eval host in FSN1, all on one WireGuard mesh —
+the full loop ran end to end: enroll → epoch-0 prestage lease → seal → epoch-1 evaluation lease,
+with signed challenge/evidence heartbeats keeping the run *Active*. The nested VM2→VM1 workload
+issued exact-action inference through the host proxy, and the chokepoint's backend logged those
+requests as sourced from the **host**, not the guest — mediation proven.
+
+| Test | What was observed | Result |
+|---|---|---|
+| A1 | The off-host actuator deleted the chokepoint in two phases (`INCOMPLETE` until the provider API confirmed the server gone, then `EGRESS_CUT`); the eval host lost its next hop with no fallback route | pass |
+| A2 | With the host agent SIGKILLed and VM2 orphaned, the off-host actuator requested a Robot hardware reset; the operator observed a fresh host boot and the loss of VM2 and VM1; the controller tripped on missing evidence; the actuator retained "physical termination UNCONFIRMED" and quarantine | pass |
+| A4 | Signed run/incarnation/epoch/token binding, replay and clock handling, terminal expiry, evidence loss, queued and in-flight cancellation (Rust); durable physical-allocation fencing, ambiguous resets, backoff, corrupt journals and provider responses (Python) | pass |
+
+**Independent review.** The end-of-phase adversarial review inspected the implementation against
+that operator record, re-ran local verification (build, tests, clippy, format, x86_64 musl
+cross-builds, shellcheck, `terraform validate`, a Trivy dependency scan) and returned
+**APPROVE-PHASE-2** ([`phase2-review-2026-09-13.md`](phase2-review-2026-09-13.md)). It did not
+repeat the provider deletion or reset itself. Four defects were fixed during the review: a
+`max_tokens` of zero disabled the generation bound on some Ollama runners (now an integer
+between 1 and 1024); parseable-but-corrupt actuator state could grant false authority (journals are now
+strictly typed and bounded); the VM observer accepted alternate I/O backends as healthy (it now
+requires the exact tap, disk, serial and display configuration); and teardown trusted stale PIDs
+(it now signals only the supported launch profile and reports UNCONFIRMED on any doubt). The review
+also recorded accepted limitations that we carry into §8: the provider cut and reset are
+**operator-invoked** — the controller's ticker revokes leases but does not itself call the actuator
+— so no automatic off-host actuation during a controller failure is certified, and no end-to-end
+kill-latency SLA is established for the bare-metal profile.
 
 Adversarial review produced one **material correctness tightening** worth stating plainly. An earlier
 kill actuator treated a successful Robot hardware-reset *request* (and subsequent loss of reachability)
@@ -438,6 +494,30 @@ auto-repeats an ambiguous reset (which could strike a later allocation), refuses
 journals, keeps credentials out of process arguments, and treats a clock rollback as unable to bypass
 backoff. This is the same discipline as the health model: **the absence of a verifiable success is
 treated as failure, not as success.**
+
+### 6.3 Phase 3 — built and validated offline; live acceptance blocked
+
+The airlock is implemented end to end (§4.6) and validated locally. The Rust workspace passes 119
+unit tests (common 24, controller 28, hostd 3, supervisor 5, evalagent 38, grader 21); the Phase 3
+Python suites add 31 (grader actuator 8, airlock firewall rendering and apply-failure simulation 7,
+launcher hooks 16), alongside the 31 Phase 2 suites and the harness regressions. The controller
+tests cover exact raw-byte binding, concurrent one-time claims, stop-before-dispatch, cumulative
+budgets and key versions across restart, ambiguous execution, and late, fenced, forged and
+conflicting results; the broker tests show the same opaque receipt across successful, duplicate,
+invalid, late, oversized, exhausted-budget and failed-grader-plane cases. The grader tests cover
+good/wrong positive controls, a forged guest "PASS", frozen-capture mutation,
+execution→teardown→publication ordering, timeout, crash and authority loss, durable replay,
+quarantine and no relaunch after ambiguous delivery. Both the grader and the updated controller
+cross-build to static x86_64 ELF executables.
+
+What is *not* established: the live G1–G5 controls (exec↔secrets separation, no forged pass,
+feedback-oracle bound, airlock one-way with no key exfiltration or relay, disposable-sandbox
+lifecycle under poison/timeout/crash/partition/restart) require a commissioned grader node,
+trusted traffic captures and independently confirmed teardown. Until then
+[`tests/phase3/acceptance.sh`](../tests/phase3/acceptance.sh) exits 77 (BLOCKED) with zero live
+assertions, and the offline runner treats any other status as a failure. The fixture is a public toy
+task (`tiny-sum`, expected output `42`), suitable for proving separation and deterministic
+comparison, not a held-out benchmark corpus.
 
 ---
 
@@ -486,10 +566,21 @@ This is a reference architecture with a deliberately bounded threat model. We st
 - **Physical termination is not cryptographically confirmable today.** As above, the actuator
   quarantines rather than claiming a kill it cannot verify. A dedicated hardware observer (PDU/BMC
   power state, external link-state) is future work to close this gap.
-- **Phase 2 is not yet independently reviewed.** Live A1 is an operator record; A2 and A4 have not run;
-  the end-of-phase adversarial review is pending. The Phase 2 VM1 workload is a minimal scripted
-  inference loop plus blocked canaries, not the Phase 1 browser agent — the positive control (A5) is
-  reused from Phase 1 rather than re-ported to x86.
+- **The off-host physical actuator is operator-invoked.** Lease expiry is enforced automatically on
+  the host (the host agent kills the guests), and the controller revokes leases automatically, but
+  the controller does not itself call the chokepoint-deletion / hardware-reset actuator. Automatic
+  off-host actuation when the controller *and* the host are both compromised or partitioned is not
+  certified, and no bare-metal kill-latency SLA has been measured; the 3.2–4.2 s figure is the Phase 1
+  macOS profile.
+- **Phase 2's live evidence is an operator record.** The review verified the implementation and
+  re-ran local checks but did not reproduce the provider deletion or reset; the review's own fixes
+  postdate the live run and must be deployed before the next containment run. The Phase 2 VM1
+  workload is a minimal scripted inference loop plus blocked canaries, not the Phase 1 browser agent —
+  the positive control (A5) is reused from Phase 1 rather than re-ported to x86.
+- **Phase 3 is unreviewed and undeployed.** Its guarantees rest on the trusted broker/scorer/store
+  boundary, not on a hardware data diode; nftables is a backstop. It does not claim universal timing
+  non-interference, cannot detect an operator rolling back *all* trusted state to an old snapshot (no
+  external anti-rollback anchor), and grades a public toy fixture.
 - **The shipped defender is rule-based, not a model.** The advisory `Judge` slot is filled by test
   doubles today (§4.5); the agentic defender with network-pipe and VM1↔VM2 boundary monitors is
   future work.
@@ -507,15 +598,17 @@ This is a reference architecture with a deliberately bounded threat model. We st
 
 ## 9. Future work
 
-- Complete Phase 2 live acceptance (A2, A4) on the dedicated hardware and re-request the formal
-  end-of-phase review.
+- Deploy the reviewed Phase 2 artifacts, commission the grader node, run the live G1–G5 airlock
+  controls, and request the end-of-Phase-3 review.
+- Close the loop from lease expiry to the off-host actuator: automatic chokepoint deletion and
+  hardware reset on controller-side expiry, with the same fencing and quarantine discipline, and a
+  measured bare-metal kill-latency bound.
 - **Agentic defender model in VM2 with monitors latched onto the network pipe.** Replace the
   rule-based judge with a bounded-authority defensive model that watches every request crossing the
   exact-action gateway, and prime a second monitor on the **VM1↔VM2 boundary** (QMP socket, tap
   interface, virtio devices, scoped VMI) so that a breakout attempt by the VM1 agent is detected at
   the boundary and VM1 is **killed and destroyed** on the spot. The defender keeps the same closed
   authority — kill VM1, request a trip — and is re-validated with the approve-everything swap test.
-- Build Phase 3, the isolated-grading airlock, end to end.
 - Add an independent hardware observer so the kill can be *confirmed*, not just dispatched.
 - Qualify bare-metal host-side VMI on the target hardware; expand scoped VMI coverage.
 - Prototype the capability-gated confidential-computing tier and validate the heartbeat-root swap.
@@ -604,14 +697,22 @@ outside.
 - **Phase 2 offline validation:** [`tests/phase2/offline.sh`](../tests/phase2/offline.sh) (actuator unit
   tests, script checks; the live A1/A2/A4 skeleton returns a distinct blocked status until the live
   drivers exist). Linux-only: [`tests/phase2/network_ns.py`](../tests/phase2/network_ns.py).
+- **Phase 3 offline validation:** [`tests/phase3/offline.sh`](../tests/phase3/offline.sh) (workspace
+  build and tests, Phase 2/3 Python regressions, shell syntax; the live G1–G5 skeleton must return 77).
 - **Continuous integration:** [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs
   `rustfmt`, `clippy -D warnings`, `cargo build/test --locked`, `ruff`, the harness regression tests,
-  `shellcheck` over all infra/test scripts, and `terraform fmt/validate` on every push.
+  `shellcheck` over all infra/test scripts, and `terraform fmt/validate` on every push;
+  [`security.yml`](../.github/workflows/security.yml) gates on Trivy (vulnerabilities, secrets, IaC
+  misconfiguration, HIGH/CRITICAL).
 - **Design docs:** [`dead-switch-architecture.md`](../dead-switch-architecture.md),
   [`dead-switch-trust-boundary-research.md`](../dead-switch-trust-boundary-research.md),
   [`phase1-local-host.md`](phase1-local-host.md), [`phase1-review-2026-09-13.md`](phase1-review-2026-09-13.md),
-  [`phase2-plan.md`](phase2-plan.md), [`README-build.md`](README-build.md),
-  [`infra/hetzner/evalhost/README.md`](../infra/hetzner/evalhost/README.md).
+  [`phase2-plan.md`](phase2-plan.md), [`phase2-review-2026-09-13.md`](phase2-review-2026-09-13.md),
+  [`phase3-plan.md`](phase3-plan.md), [`phase3-build.md`](phase3-build.md),
+  [`phase3-controller.md`](phase3-controller.md), [`phase3-grader.md`](phase3-grader.md),
+  [`README-build.md`](README-build.md),
+  [`infra/hetzner/evalhost/README.md`](../infra/hetzner/evalhost/README.md),
+  [`infra/hetzner/grader/README.md`](../infra/hetzner/grader/README.md).
 - **Build:** `cargo build --workspace`; cross-compile with
   `cargo zigbuild --release --target {aarch64,x86_64}-unknown-linux-musl`.
 

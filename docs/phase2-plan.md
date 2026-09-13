@@ -65,7 +65,12 @@ which are SEPARATE from the Cloud API token and are NOT in `.env`. Without them 
 qualification + two-node acceptance cannot run. The Cloud controller + chokepoint + network + code can
 proceed now on the Cloud API token.
 
-## Status (2026-09-13): code-complete, live infrastructure up, A1 passed live; A2/A4 pending
+## Status (2026-09-13): live A1/A2/A4 passed; end-of-phase verdict APPROVE-PHASE-2 (see `phase2-review-2026-09-13.md`)
+
+> The section below is the build/bring-up record as it stood before the review. The review doc is
+> authoritative for the accepted scope, the four defects fixed during review, and the accepted limits.
+
+### Bring-up record
 
 Every Codex start-review must-fix has an implementation. Offline validation: `cargo test --workspace`
 = 64 (common 15, controller 7, hostd 3, supervisor 5, evalagent 34); `tests/phase2/offline.sh` =

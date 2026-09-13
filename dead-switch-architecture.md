@@ -41,7 +41,7 @@ host-side VMI we want**. So the host is trusted for isolation, but the kill is m
 3. **The defensive AI has bounded authority.** It may trigger an automatic veto, pause, or termination
    *through a constrained controller* — never change hard policy, extend its own authority, or override
    a revocation. Verified by swapping in an approve-everything model.
-4. **The shutdown mechanism ships in Phase A**, not deferred to Phase B.
+4. **The shutdown mechanism ships in the first implementation phase**, not deferred to later work.
 5. **Isolated grading with evaluation-integrity controls** (see _Evaluation integrity_ below).
 
 ### MVP hardening (from the trust-boundary research)
